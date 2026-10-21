@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import type { Observation, Session, Task } from '../shared/types.ts';
 import { now } from '../shared/types.ts';
 import { withBrowser } from './browser.ts';
-import { errorMessage, inScope, isSafeNavigation, throwIfAborted } from './policy.ts';
+import {
+  errorMessage,
+  inScope,
+  isSafeNavigation,
+  throwIfAborted,
+  testerArmyCompatible,
+} from './policy.ts';
 import { PageReadiness } from './page-readiness.ts';
 
 export async function discover(
@@ -109,12 +115,18 @@ export async function discover(
 export function tasksFromPages(session: Session, pages: Observation[]): Task[] {
   const tasks: Task[] = [];
   for (const page of pages) {
+    const compatible = session.options.engine !== 'tester-army' || testerArmyCompatible(page.url);
     const base = {
       sessionId: session.id,
       url: page.url,
       source: 'dom' as const,
       engine:
-        session.options.engine === 'midscene' ? ('playwright' as const) : session.options.engine,
+        session.options.engine === 'midscene' || !compatible
+          ? ('playwright' as const)
+          : session.options.engine,
+      engineNote: !compatible
+        ? '该 HTTP 目标使用 Playwright 兼容执行；TesterArmy 上游仅支持 HTTPS 或 loopback HTTP。'
+        : undefined,
       risk: 'read' as const,
       status: 'pending' as const,
       createdAt: now(),

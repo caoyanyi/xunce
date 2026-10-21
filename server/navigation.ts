@@ -27,9 +27,9 @@ export async function followLink(
   // Observe both outcomes before clicking. The losing waiter handles its own rejection,
   // including cancellation/context cleanup after the popup has already won the race.
   const sameTab = source
-    .waitForURL((url) => url.href.split('#')[0] === expected, {
+    .waitForEvent('framenavigated', {
       timeout: 12000,
-      waitUntil: 'domcontentloaded',
+      predicate: (frame) => frame === source.mainFrame() && frame.url().split('#')[0] === expected,
     })
     .then(
       () => ({ page: source }),

@@ -121,11 +121,27 @@ docker run -d --init --name e2e-explorer \
 
 未配置模型时，平台明确使用 **DOM 规则发现**，不将规则匹配描述为模型推理。它能主动生成基础测试；复杂业务意图需要配置规划模型与视觉模型。
 
+### 0.2 工作流升级
+
+- **先规划再执行**：发送“只探索”或“重新规划当前测试目标”。重新规划优先复用已发现页面；旧的自动任务会归档，手动创建和已自定义的任务保留。
+- **任务可修订**：点击“新建任务”或在详情中“编辑任务”，逐步修改地址、断言、选择器或视觉操作，支持排序步骤。每次修改保存版本，历史运行保留当时的定义。
+- **选择与停用**：勾选后“运行选中”；停用的任务不会运行。归档可以通过“已归档”筛选恢复，不删除历史。
+- **排队与恢复**：不同会话按 FIFO 排队，每个会话最多一个未完成作业，最多 20 个等待作业。可以取消排队；“继续未完成”只选择待执行和已中断任务，已中断任务从头运行；“复跑失败”选择失败或中断任务。
+- **设置独立保存**：会话名称、目标和探索选项可直接保存。控制命令不再覆盖名称和测试目标；修改已有任务会话的目标仍需要新建会话。
+- **进度与诊断**：显示本次运行计数、当前步骤、排队位置、历史作业、失败位置和处理建议。模型规划失败会明确标注只完成基础检查。普通提问不启动浏览器或模型请求。
+
+交互草稿可以在只读会话中保存，但执行前仍需允许交互。运行前会检查权限、模型和执行器兼容性，不通过检查不会创建虚假的运行记录。针对非 loopback HTTP，规则任务会自动选择 Playwright 并显示原因；已有不兼容任务可在编辑器切换执行器。
+
+[任务编辑器](docs/screenshots/task-editor.png) · [工作台](docs/screenshots/workspace-upgrade.png) · [升级验收](docs/verification-v0.2.md)
+
 ### 常用对话
 
 ```text
 探索 http://localhost:3000，检查页面和登录表单并自动执行
 只探索站点并发现可验证的任务
+重新规划当前测试目标
+继续未完成
+为什么登录失败？
 运行全部任务
 状态
 停止
@@ -213,27 +229,30 @@ URL 预期使用 `assertUrl` 读取浏览器地址；视觉断言单独检查页
 
 ```text
 data/
-├── explorer.sqlite       # 会话、消息、页面、任务、run、事件
+├── explorer.sqlite       # 会话、消息、页面、任务、run、作业、事件
 └── artifacts/
     └── <session-id>/
         ├── page-*.png    # 探索证据
         └── <run-id>/     # 单次执行截图、trace、报告、测试代码
 ```
 
-通过 `DATA_DIR` 自定义位置。已在运行的任务不能重复启动；服务关闭或取消时会收尾 browser/子进程并保留已完成结果。直接 Playwright/Midscene 任务预算 120 秒，TesterArmy 子进程预算 60 秒。
+通过 `DATA_DIR` 自定义位置。同一会话的作业不能重复启动，不同会话的作业顺序排队；服务关闭或取消时会收尾 browser/子进程并保留已完成结果。直接 Playwright/Midscene 任务预算 120 秒，TesterArmy 子进程预算 60 秒。
 
-| 方法       | 路径                                  | 用途                                                 |
-| ---------- | ------------------------------------- | ---------------------------------------------------- |
-| GET        | `/api/health`                         | 服务健康状态                                         |
-| GET        | `/api/config`                         | 模型配置布尔值与演示 URL，不返回密钥                 |
-| GET / POST | `/api/sessions`                       | 列出/新建会话                                        |
-| GET        | `/api/sessions/:id`                   | 完整会话快照                                         |
-| POST       | `/api/sessions/:id/chat`              | 对话指令与探索设置                                   |
-| POST       | `/api/sessions/:id/tasks`             | 创建经校验的结构化任务                               |
-| POST       | `/api/sessions/:id/run`               | 全部、指定任务或失败任务运行                         |
-| POST       | `/api/sessions/:id/cancel`            | 停止当前操作                                         |
-| POST       | `/api/sessions/:id/runs/:runId/input` | 提交人工验证码：`{ requestId, value }`，成功返回 202 |
-| GET        | `/api/sessions/:id/report`            | 下载包含任务和历史的 JSON 报告                       |
+| 方法       | 路径                                  | 用途                                                                  |
+| ---------- | ------------------------------------- | --------------------------------------------------------------------- |
+| GET        | `/api/runtime`                        | 全局活动作业与排队顺序                                                |
+| PATCH      | `/api/sessions/:id`                   | 保存名称、目标和选项（只更新提交的字段）                              |
+| PATCH      | `/api/sessions/:id/tasks/:taskId`     | 修改任务、启停、归档/恢复；可提供 `expectedRevision` 防止覆盖他人修改 |
+| GET        | `/api/health`                         | 服务健康状态                                                          |
+| GET        | `/api/config`                         | 模型配置布尔值与演示 URL，不返回密钥                                  |
+| GET / POST | `/api/sessions`                       | 列出/新建会话                                                         |
+| GET        | `/api/sessions/:id`                   | 完整会话快照                                                          |
+| POST       | `/api/sessions/:id/chat`              | 对话指令与探索设置                                                    |
+| POST       | `/api/sessions/:id/tasks`             | 创建经校验的结构化任务                                                |
+| POST       | `/api/sessions/:id/run`               | 运行全部/指定任务；`mode: "retry"` 或 `"continue"`                    |
+| POST       | `/api/sessions/:id/cancel`            | 停止当前操作或取消本会话排队                                          |
+| POST       | `/api/sessions/:id/runs/:runId/input` | 提交人工验证码：`{ requestId, value }`，成功返回 202                  |
+| GET        | `/api/sessions/:id/report`            | 下载包含任务和历史的 JSON 报告                                        |
 
 例如，新建一个只使用 Playwright 的会话：
 

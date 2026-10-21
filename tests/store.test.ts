@@ -6,6 +6,144 @@ import { Store } from '../server/store.ts';
 import { task } from './helpers.ts';
 import { now } from '../shared/types.ts';
 describe('SQLite persistence', () => {
+  it('archives outdated plans while preserving edited/manual assets and immutable run snapshots', () => {
+    const store = new Store(':memory:');
+    try {
+      const s = store.createSession('https://example.test');
+      const first = task(s.targetUrl, { id: 'old', sessionId: s.id, title: '旧方案' });
+      const edited = task(s.targetUrl, {
+        id: 'edited',
+        sessionId: s.id,
+        title: '保留编辑',
+        edited: true,
+      });
+      const manual = task(s.targetUrl, { id: 'manual', sessionId: s.id, source: 'manual' });
+      [first, edited, manual].forEach((value) => store.put('tasks', value));
+      store.put('runs', {
+        id: 'history',
+        sessionId: s.id,
+        taskId: first.id,
+        taskSnapshot: structuredClone(first),
+        taskRevision: 1,
+        engine: 'playwright',
+        status: 'passed',
+        startedAt: now(),
+      });
+      const next = task(s.targetUrl, { id: 'new', sessionId: s.id, title: '新方案' });
+      store.reconcileTasks(s.id, [next], 'plan2');
+      expect(store.get('tasks', 'old')?.archivedReason).toBe('replanned');
+      expect(store.get('tasks', 'edited')?.archived).not.toBe(true);
+      expect(store.get('tasks', 'manual')?.archived).not.toBe(true);
+      expect(store.get('runs', 'history')?.taskSnapshot?.title).toBe('旧方案');
+      store.reconcileTasks(
+        s.id,
+        [{ ...next, id: 'another', steps: [{ action: 'assertText', text: '新预期' }] }],
+        'plan3',
+      );
+      expect(store.get('tasks', 'new')?.revision).toBe(2);
+      expect(store.list('tasks', s.id)).toHaveLength(4);
+    } finally {
+      store.close();
+    }
+  });
+  it('does not resurrect a user-archived task or overwrite a customized task', () => {
+    const store = new Store(':memory:');
+    try {
+      const s = store.createSession('https://example.test');
+      const archived = task(s.targetUrl, {
+        id: 'archived',
+        sessionId: s.id,
+        archived: true,
+        archivedReason: 'user',
+      });
+      const edited = task(s.targetUrl, {
+        id: 'edited',
+        sessionId: s.id,
+        title: 'edited',
+        edited: true,
+        steps: [{ action: 'assertText', text: '手工修改' }],
+      });
+      store.put('tasks', archived);
+      store.put('tasks', edited);
+      const result = store.reconcileTasks(
+        s.id,
+        [
+          { ...archived, id: 'replacement', archived: false },
+          { ...edited, id: 'new-edit', steps: [{ action: 'assertPage' }] },
+        ],
+        'plan',
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0].steps).toEqual(edited.steps);
+      expect(store.get('tasks', 'archived')?.archivedReason).toBe('user');
+    } finally {
+      store.close();
+    }
+  });
+  it('cancels queued jobs on restart without executing them', () => {
+    const store = new Store(':memory:');
+    try {
+      const s = store.createSession('https://example.test');
+      store.updateSession(s.id, { status: 'queued' });
+      store.put('jobs', {
+        id: 'queued',
+        sessionId: s.id,
+        mode: 'run',
+        status: 'queued',
+        taskIds: [],
+        total: 0,
+        completed: 0,
+        passed: 0,
+        failed: 0,
+        cancelled: 0,
+        createdAt: now(),
+      });
+      store.recoverInterrupted();
+      expect(store.snapshot(s.id)?.jobs?.[0].status).toBe('cancelled');
+      expect(store.snapshot(s.id)?.session.status).toBe('cancelled');
+    } finally {
+      store.close();
+    }
+  });
+  it('reconciles interrupted job counters from committed run records after restart', () => {
+    const store = new Store(':memory:');
+    try {
+      const s = store.createSession('https://example.test');
+      store.put('jobs', {
+        id: 'partial',
+        sessionId: s.id,
+        mode: 'run',
+        status: 'running',
+        taskIds: ['a', 'b', 'c'],
+        total: 3,
+        completed: 0,
+        passed: 0,
+        failed: 0,
+        cancelled: 0,
+        createdAt: now(),
+      });
+      for (const [index, status] of ['passed', 'running'].entries())
+        store.put('runs', {
+          id: `r${index}`,
+          sessionId: s.id,
+          jobId: 'partial',
+          taskId: `t${index}`,
+          engine: 'playwright',
+          status: status as 'passed' | 'running',
+          startedAt: now(),
+        });
+      store.recoverInterrupted();
+      expect(store.get('jobs', 'partial')).toMatchObject({
+        status: 'cancelled',
+        total: 3,
+        completed: 2,
+        passed: 1,
+        cancelled: 1,
+      });
+    } finally {
+      store.close();
+    }
+  });
   it('invalidates waiting CAPTCHA requests after restart', () => {
     const store = new Store(':memory:');
     try {

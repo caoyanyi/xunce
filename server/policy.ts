@@ -79,3 +79,11 @@ export function errorMessage(error: unknown): string {
 export function throwIfAborted(signal: AbortSignal) {
   if (signal.aborted) throw new UserError('操作已停止', 409);
 }
+export function testerArmyCompatible(input: string) {
+  const url = new URL(input);
+  return (
+    url.protocol === 'https:' ||
+    ['localhost', '[::1]'].includes(url.hostname) ||
+    /^127(?:\.\d{1,3}){3}$/.test(url.hostname)
+  );
+}

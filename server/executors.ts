@@ -12,7 +12,7 @@ import { followLink } from './navigation.ts';
 
 type Evidence = Pick<
   Run,
-  'screenshot' | 'trace' | 'report' | 'script' | 'actualUrl' | 'failureCode'
+  'screenshot' | 'trace' | 'report' | 'script' | 'actualUrl' | 'failureCode' | 'failedStep'
 >;
 
 export async function executeTask(
@@ -187,10 +187,9 @@ export async function executeTask(
             }
           };
           for (const [index, step] of task.steps.entries()) {
+            evidence.failedStep = { index, action: step.action };
             throwIfAborted(executionSignal);
-            emit(
-              `步骤 ${index + 1}/${task.steps.length} · ${step.action}${'instruction' in step ? ` · ${step.instruction}` : ''}`,
-            );
+            emit(`步骤 ${index + 1}/${task.steps.length} · ${step.action}`);
             while (true) {
               try {
                 await runStep(step);
@@ -270,6 +269,7 @@ export async function executeTask(
             }
           }
           delete evidence.failureCode;
+          delete evidence.failedStep;
         } catch (error) {
           if (
             error &&

@@ -15,6 +15,19 @@ describe('conversation intent routing', () => {
     ['停止', 'stop'],
     ['取消探索', 'stop'],
     ['你能做什么？', 'help'],
+    ['为什么登录失败？', 'explain'],
+    ['验证码应该怎么填？', 'explain'],
+    ['如何使用验证码？', 'explain'],
+    ['继续未完成任务', 'continue'],
+    ['继续执行', 'continue'],
+    ['重新规划登录测试', 'plan'],
+    ['重新规划并执行登录测试', 'auto'],
+    ['你好', 'explain'],
+    ['又失败了', 'explain'],
+    ['验证码在哪里', 'explain'],
+    ['检查登录是否成功？', 'auto'],
+    ['继续', 'continue'],
+    ['再测一次', 'run'],
   ])('%s → %s', (message, command) => {
     expect(classifyMessage(message)).toBe(command);
   });

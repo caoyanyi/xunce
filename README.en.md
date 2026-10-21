@@ -150,6 +150,19 @@ The current command router recognizes these commands:
 
 General goals start exploration and automatic execution. Once a session has tasks, create a new session to change its target. The default budget is **6 pages** and **depth 2**; adjust it under **Exploration settings** (`探索设置`).
 
+## Workspace upgrades in 0.2
+
+- **Plan before execution:** use discovery-only or replan. Replanning reuses observed pages when available, archives obsolete generated tasks, and preserves manual/customized tasks.
+- **Edit test assets:** create tasks and edit URLs, assertions, selectors, visual instructions, or step order. Runs retain the task revision and definition they actually used.
+- **Select and organize:** run selected tasks, disable unwanted cases, or archive and restore them through the archived filter. History is retained.
+- **Queue and continue:** sessions enter a FIFO queue with one unfinished job per session and at most 20 waiting jobs. Cancel queued work without stopping another session. Continue selects pending/cancelled tasks; interrupted tasks restart from their first step. Retry selects failed/cancelled tasks.
+- **Save settings separately:** persist the session name, target, and options without sending a new conversation. Control commands do not replace the session name or testing goal.
+- **Understand results:** view per-job progress, current steps, queue position, job history, failed steps, and recovery advice. A failed model plan is explicitly identified as basic checks only. Informational questions start neither browsers nor model calls.
+
+Interactive drafts can be saved in read-only sessions; execution still requires writable interaction. Permission, model, and engine checks run before a job is created. Generated tasks for non-loopback HTTP targets select Playwright with an explanation; edit existing incompatible cases to change their engine.
+
+[Task editor](docs/screenshots/task-editor.png) · [Workspace](docs/screenshots/workspace-upgrade.png) · [Upgrade verification](docs/verification-v0.2.md)
+
 ## How the engines work together
 
 ```mermaid
@@ -234,20 +247,23 @@ data/
         └── <run-id>/     # Run screenshots, traces, reports, and test code.
 ```
 
-Use `DATA_DIR` to customize native storage. Docker uses `/app/data` in its persistent volume. Duplicate execution requests are rejected while a job is active. Cancellation and shutdown clean up browsers and child processes while retaining completed results. Direct Playwright/Midscene tasks have a **120-second** budget; TesterArmy subprocesses have a **60-second** budget.
+Use `DATA_DIR` to customize native storage. Docker uses `/app/data` in its persistent volume. Duplicate jobs within the same session are rejected; different sessions queue for the single worker. Cancellation and shutdown clean up browsers and child processes while retaining completed results. Direct Playwright/Midscene tasks have a **120-second** budget; TesterArmy subprocesses have a **60-second** budget.
 
-| Method     | Endpoint                              | Purpose                                                               |
-| ---------- | ------------------------------------- | --------------------------------------------------------------------- |
-| GET        | `/api/health`                         | Service health.                                                       |
-| GET        | `/api/config`                         | Model-configuration booleans and demo URL; no keys.                   |
-| GET / POST | `/api/sessions`                       | List or create sessions.                                              |
-| GET        | `/api/sessions/:id`                   | Full session snapshot.                                                |
-| POST       | `/api/sessions/:id/chat`              | Conversation commands and exploration options.                        |
-| POST       | `/api/sessions/:id/tasks`             | Create a validated structured task.                                   |
-| POST       | `/api/sessions/:id/run`               | Run all, selected, or failed tasks.                                   |
-| POST       | `/api/sessions/:id/cancel`            | Stop the current operation.                                           |
-| POST       | `/api/sessions/:id/runs/:runId/input` | Submit a human CAPTCHA response: `{ requestId, value }`; returns 202. |
-| GET        | `/api/sessions/:id/report`            | Download a JSON report with tasks and history.                        |
+| Method     | Endpoint                              | Purpose                                                                                  |
+| ---------- | ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| GET        | `/api/runtime`                        | Active global job and FIFO queue.                                                        |
+| PATCH      | `/api/sessions/:id`                   | Save the name, target, or provided options without resetting omitted fields.             |
+| PATCH      | `/api/sessions/:id/tasks/:taskId`     | Edit, enable/disable, archive/restore; optional `expectedRevision` prevents stale edits. |
+| GET        | `/api/health`                         | Service health.                                                                          |
+| GET        | `/api/config`                         | Model-configuration booleans and demo URL; no keys.                                      |
+| GET / POST | `/api/sessions`                       | List or create sessions.                                                                 |
+| GET        | `/api/sessions/:id`                   | Full session snapshot.                                                                   |
+| POST       | `/api/sessions/:id/chat`              | Conversation commands and exploration options.                                           |
+| POST       | `/api/sessions/:id/tasks`             | Create a validated structured task.                                                      |
+| POST       | `/api/sessions/:id/run`               | Run all/selected tasks; use `mode: "retry"` or `"continue"`.                             |
+| POST       | `/api/sessions/:id/cancel`            | Stop active work or cancel this session’s queued job.                                    |
+| POST       | `/api/sessions/:id/runs/:runId/input` | Submit a human CAPTCHA response: `{ requestId, value }`; returns 202.                    |
+| GET        | `/api/sessions/:id/report`            | Download a JSON report with tasks and history.                                           |
 
 Create a session using Playwright:
 

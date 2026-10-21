@@ -27,14 +27,30 @@ export const optionsSchema = z.object({
   allowWrites: z.boolean().default(false),
 });
 export type Options = z.infer<typeof optionsSchema>;
+export const optionsPatchSchema = z.object({
+  maxPages: optionsSchema.shape.maxPages.removeDefault().optional(),
+  maxDepth: optionsSchema.shape.maxDepth.removeDefault().optional(),
+  engine: optionsSchema.shape.engine.removeDefault().optional(),
+  allowWrites: optionsSchema.shape.allowWrites.removeDefault().optional(),
+});
 export type SessionStatus =
-  'idle' | 'discovering' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'cancelled';
+  | 'idle'
+  | 'queued'
+  | 'discovering'
+  | 'planning'
+  | 'running'
+  | 'waiting_input'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+export { busyStatuses, statusLabels, runnableTask } from './workspace.ts';
 export interface Session {
   id: string;
   name: string;
   targetUrl: string;
   status: SessionStatus;
   options: Options;
+  goal?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,6 +90,43 @@ export interface Task {
   steps: Step[];
   status: 'pending' | 'running' | 'waiting_input' | 'passed' | 'failed' | 'cancelled';
   createdAt: string;
+  updatedAt?: string;
+  revision?: number;
+  enabled?: boolean;
+  archived?: boolean;
+  archivedReason?: 'user' | 'replanned';
+  edited?: boolean;
+  planId?: string;
+  engineNote?: string;
+}
+export type JobMode = 'discover' | 'auto' | 'run' | 'retry' | 'continue' | 'plan';
+export interface Job {
+  id: string;
+  sessionId: string;
+  mode: JobMode;
+  status: Exclude<SessionStatus, 'idle'>;
+  taskIds: string[];
+  total: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  cancelled: number;
+  activeTaskId?: string;
+  currentStep?: number;
+  stepCount?: number;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  warning?: string;
+}
+export interface RuntimeStatus {
+  active?: Job;
+  queued: Job[];
+}
+export interface Diagnosis {
+  title: string;
+  advice: string;
 }
 export interface InputRequest {
   id: string;
@@ -101,6 +154,11 @@ export interface Run {
   trace?: string;
   report?: string;
   script?: string;
+  jobId?: string;
+  taskRevision?: number;
+  taskSnapshot?: Task;
+  failedStep?: { index: number; action: Step['action'] };
+  diagnosis?: Diagnosis;
 }
 export interface RunEvent {
   id: string;
@@ -109,6 +167,7 @@ export interface RunEvent {
   level: 'info' | 'success' | 'error';
   message: string;
   createdAt: string;
+  jobId?: string;
 }
 export interface Snapshot {
   session: Session;
@@ -117,6 +176,7 @@ export interface Snapshot {
   tasks: Task[];
   runs: Run[];
   events: RunEvent[];
+  jobs?: Job[];
 }
 export interface ConfigStatus {
   planner: boolean;

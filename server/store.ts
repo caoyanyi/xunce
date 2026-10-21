@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   now,
+  busyStatuses,
   optionsSchema,
   type Session,
   type Message,
@@ -12,6 +13,7 @@ import {
   type Run,
   type RunEvent,
   type Snapshot,
+  type Job,
 } from '../shared/types.ts';
 
 type Records = {
@@ -21,6 +23,7 @@ type Records = {
   tasks: Task;
   runs: Run;
   events: RunEvent;
+  jobs: Job;
 };
 export class Store {
   private db: DatabaseSync;
@@ -71,11 +74,18 @@ export class Store {
   message(sessionId: string, role: Message['role'], content: string) {
     return this.put('messages', { id: randomUUID(), sessionId, role, content, createdAt: now() });
   }
-  event(sessionId: string, message: string, level: RunEvent['level'] = 'info', runId?: string) {
+  event(
+    sessionId: string,
+    message: string,
+    level: RunEvent['level'] = 'info',
+    runId?: string,
+    jobId?: string,
+  ) {
     return this.put('events', {
       id: randomUUID(),
       sessionId,
       runId,
+      jobId,
       level,
       message,
       createdAt: now(),
@@ -91,10 +101,29 @@ export class Store {
           tasks: this.list('tasks', id),
           runs: this.list('runs', id),
           events: this.list('events', id),
+          jobs: this.list('jobs', id),
         }
       : undefined;
   }
   recoverInterrupted() {
+    for (const job of this.list('jobs'))
+      if (busyStatuses.includes(job.status)) {
+        const runs = this.list('runs', job.sessionId).filter((run) => run.jobId === job.id);
+        this.put('jobs', {
+          ...job,
+          status: 'cancelled',
+          activeTaskId: undefined,
+          currentStep: undefined,
+          completed: runs.length,
+          passed: runs.filter((run) => run.status === 'passed').length,
+          failed: runs.filter((run) => run.status === 'failed').length,
+          cancelled: runs.filter((run) =>
+            ['running', 'waiting_input', 'cancelled'].includes(run.status),
+          ).length,
+          finishedAt: now(),
+          error: '服务重启，作业已中断。请继续未完成任务或重新运行。',
+        });
+      }
     for (const run of this.list('runs'))
       if (['running', 'waiting_input'].includes(run.status))
         this.put('runs', {
@@ -118,7 +147,7 @@ export class Store {
         });
       }
     for (const session of this.list('sessions'))
-      if (['discovering', 'running', 'waiting_input'].includes(session.status)) {
+      if (busyStatuses.includes(session.status)) {
         this.updateSession(session.id, { status: 'cancelled' });
         this.message(
           session.id,
@@ -126,6 +155,68 @@ export class Store {
           '上次操作因服务重启而中断。已保留结果，可以重新探索或复跑。',
         );
       }
+  }
+  reconcileTasks(
+    sessionId: string,
+    generated: Task[],
+    planId: string,
+    sources: Task['source'][] = ['dom', 'model'],
+  ): Task[] {
+    const existing = this.list('tasks', sessionId);
+    const selected: Task[] = [];
+    const identity = (task: Task) => JSON.stringify([task.source, task.url, task.kind, task.title]);
+    const definition = (task: Task) =>
+      JSON.stringify([
+        task.title,
+        task.description,
+        task.url,
+        task.kind,
+        task.priority,
+        task.engine,
+        task.risk,
+        task.steps,
+      ]);
+    this.db.exec('BEGIN');
+    try {
+      for (const candidate of generated) {
+        const previous = existing.find((task) => identity(task) === identity(candidate));
+        if (previous?.archivedReason === 'user') continue;
+        if (previous?.edited) {
+          selected.push(previous);
+          continue;
+        }
+        const changed = previous && definition(previous) !== definition(candidate);
+        selected.push(
+          this.put('tasks', {
+            ...candidate,
+            id: previous?.id || candidate.id,
+            createdAt: previous?.createdAt || candidate.createdAt,
+            updatedAt: now(),
+            revision: (previous?.revision || 1) + (changed ? 1 : 0),
+            status: previous && !changed ? previous.status : 'pending',
+            enabled: previous?.enabled ?? true,
+            archived: false,
+            archivedReason: undefined,
+            planId,
+          }),
+        );
+      }
+      const ids = new Set(selected.map((task) => task.id));
+      for (const task of existing)
+        if (
+          sources.includes(task.source) &&
+          task.source !== 'manual' &&
+          !task.edited &&
+          task.archivedReason !== 'user' &&
+          !ids.has(task.id)
+        )
+          this.put('tasks', { ...task, archived: true, archivedReason: 'replanned' });
+      this.db.exec('COMMIT');
+      return selected;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   close() {
     this.db.close();

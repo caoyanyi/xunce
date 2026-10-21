@@ -4,6 +4,8 @@ import { spawn } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { testApp, task } from './helpers.ts';
+import { withBrowser } from '../server/browser.ts';
+import { followLink } from '../server/navigation.ts';
 
 let env: Awaited<ReturnType<typeof testApp>>;
 let base: string;
@@ -30,7 +32,7 @@ const fixture = createServer((req, res) => {
     res.end('<title>Unavailable</title><h1>Temporary failure</h1>');
   } else
     res.end(
-      `<title>Login</title><h1>Login page</h1><a href="/destination" target="_blank" rel="noopener">Terms</a><a href="/same-destination">Same tab</a><a href="/broken" target="_blank">Broken terms</a><a href="/slow" target="_blank">Slow terms</a><a href="${outsideBase}/" target="_blank">Outside</a>`,
+      `<title>Login</title><h1>Login page</h1><a href="/destination" target="_blank" rel="noopener">Terms</a><a href="/same-destination">Same tab</a><a href="/broken" target="_blank">Broken terms</a><a href="/slow" target="_blank">Slow terms</a><a href="${outsideBase}/" target="_blank">Outside</a><a href="/" target="_blank">Self</a>`,
     );
 });
 beforeAll(async () => {
@@ -82,6 +84,15 @@ await withBrowser(${JSON.stringify(base)}, false, AbortSignal.timeout(10000), as
   });
 }
 describe('popup request and navigation lifecycle', () => {
+  it('adopts a new tab even when the link address equals the source address', async () => {
+    await withBrowser(base, false, new AbortController().signal, async (context) => {
+      const source = await context.newPage();
+      await source.goto(base);
+      const result = await followLink(source, `${base}/`);
+      expect(result.page).not.toBe(source);
+      expect(context.pages()).toHaveLength(2);
+    });
+  });
   it('does not terminate the server process when a popup navigation has no frame yet', async () => {
     const result = await browserChild('Terms');
     expect(result.stderr).not.toContain('Frame for this navigation request is not available');

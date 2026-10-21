@@ -26,6 +26,13 @@ const visual = {
   ],
 };
 describe('evidence-grounded planning', () => {
+  it('chooses a truthful Playwright fallback for TesterArmy-incompatible LAN HTTP targets', () => {
+    const lan = session('http://192.168.1.28:9999/');
+    lan.options.engine = 'tester-army';
+    const [first] = tasksFromPages(lan, [{ ...page, url: lan.targetUrl }]);
+    expect(first.engine).toBe('playwright');
+    expect(first.engineNote).toContain('兼容');
+  });
   it('accepts a deterministic browser URL assertion as an outcome', () => {
     const [task] = parseModelTasks(
       {

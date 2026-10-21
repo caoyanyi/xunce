@@ -30,44 +30,17 @@ import {
 } from 'lucide-react';
 import type { ConfigStatus, Options, Run, Session, Snapshot, Step, Task } from '../shared/types.ts';
 import { allowedWhileBusy } from '../shared/commands.ts';
+import type { RuntimeStatus } from '../shared/types.ts';
+import { busyStatuses, runnableTask } from '../shared/workspace.ts';
+import { api } from './api.ts';
+import { statusNames, engineNames, kindNames } from './labels.ts';
+import { TaskEditor } from './TaskEditor.tsx';
+import { JobPanel } from './JobPanel.tsx';
 
-async function api<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(path, {
-    ...(body !== undefined
-      ? {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      : {}),
-    signal,
-  });
-  const value = await response.json();
-  if (!response.ok) throw new Error(value.error || `请求失败（${response.status}）`);
-  return value;
-}
-const statusNames: Record<string, string> = {
-  idle: '准备就绪',
-  discovering: '正在探索',
-  running: '正在执行',
-  waiting_input: '等待验证码',
-  completed: '已完成',
-  failed: '失败',
-  cancelled: '已停止',
-  pending: '待执行',
-  passed: '通过',
-};
-const engineNames = { playwright: 'Playwright', 'tester-army': 'TesterArmy', midscene: 'Midscene' };
-const kindNames = {
-  smoke: '页面可用性',
-  navigation: '导航验证',
-  form: '表单校验',
-  visual: '视觉流程',
-};
 function StatusIcon({ status }: { status: string }) {
   if (status === 'passed') return <CheckCircle2 size={17} className="text-green" />;
   if (status === 'failed') return <XCircle size={17} className="text-red" />;
-  if (status === 'running' || status === 'discovering')
+  if (['running', 'discovering', 'planning', 'queued'].includes(status))
     return <LoaderCircle size={17} className="spin text-accent" />;
   if (status === 'cancelled') return <Square size={15} className="text-muted" />;
   if (status === 'waiting_input') return <MessageSquare size={17} className="text-accent" />;
@@ -127,6 +100,10 @@ export function App() {
   const [settings, setSettings] = useState(false);
   const [tab, setTab] = useState<'tasks' | 'pages' | 'events'>('tasks');
   const [filter, setFilter] = useState('all');
+  const [runtime, setRuntime] = useState<RuntimeStatus>({ queued: [] });
+  const [sessionName, setSessionName] = useState('');
+  const [checkedIds, setCheckedIds] = useState<string[]>([]);
+  const [editor, setEditor] = useState<Task | 'new' | null>(null);
   const [query, setQuery] = useState('');
   const [taskId, setTaskId] = useState('');
   const [error, setError] = useState('');
@@ -135,9 +112,7 @@ export function App() {
   const activeRef = useRef(activeId);
   const chatEnd = useRef<HTMLDivElement>(null);
   activeRef.current = activeId;
-  const busy = Boolean(
-    snapshot && ['discovering', 'running', 'waiting_input'].includes(snapshot.session.status),
-  );
+  const busy = Boolean(snapshot && busyStatuses.includes(snapshot.session.status));
   const waitingRun = snapshot?.runs.find(
     (run) => run.status === 'waiting_input' && run.pendingInput,
   );
@@ -146,7 +121,11 @@ export function App() {
   }, []);
   const refresh = useCallback(
     async (id: string) => {
-      const next = await api<Snapshot>(`/api/sessions/${id}`);
+      const [next, state] = await Promise.all([
+        api<Snapshot>(`/api/sessions/${id}`),
+        api<RuntimeStatus>('/api/runtime'),
+      ]);
+      setRuntime(state);
       if (activeRef.current === id) setSnapshot(next);
       await refreshSessions();
     },
@@ -191,36 +170,44 @@ export function App() {
     localStorage.setItem('explorer-session', activeId);
     setSnapshot(undefined);
     setTaskId('');
+    setCheckedIds([]);
+    setEditor(null);
     setError('');
     let disposed = false;
-    let controller: AbortController | undefined;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async (initial: boolean) => {
-      controller?.abort();
-      controller = new AbortController();
       try {
-        const next = await api<Snapshot>(`/api/sessions/${activeId}`, undefined, controller.signal);
+        const [next, state, list] = await Promise.all([
+          api<Snapshot>(`/api/sessions/${activeId}`, undefined, controller.signal),
+          api<RuntimeStatus>('/api/runtime', undefined, controller.signal),
+          api<Session[]>('/api/sessions', undefined, controller.signal),
+        ]);
         if (!disposed) {
+          setError((previous) => (previous === '无法连接服务，正在自动重连。' ? '' : previous));
           setSnapshot(next);
+          setRuntime(state);
+          setSessions(list);
           if (initial) {
             setTarget(next.session.targetUrl);
             setOptions(next.session.options);
+            setSessionName(next.session.name);
           }
         }
-      } catch (e) {
-        if (!disposed && (e as Error).name !== 'AbortError') setError((e as Error).message);
+      } catch (error) {
+        if (!disposed && (error as Error).name !== 'AbortError')
+          setError('无法连接服务，正在自动重连。');
+      } finally {
+        if (!disposed) timer = setTimeout(() => void load(false), 1400);
       }
     };
     void load(true);
-    const interval = setInterval(() => {
-      void load(false);
-      void refreshSessions().catch(() => {});
-    }, 1400);
     return () => {
       disposed = true;
-      controller?.abort();
-      clearInterval(interval);
+      controller.abort();
+      clearTimeout(timer);
     };
-  }, [activeId, refreshSessions]);
+  }, [activeId]);
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [snapshot?.messages.length]);
@@ -263,10 +250,13 @@ export function App() {
       await refresh(id);
     });
   }
-  async function run(taskIds?: string[], failedOnly = false) {
+  async function run(taskIds?: string[], failedOnly = false, mode?: 'continue') {
     const id = activeId;
     await perform(async () => {
-      await api(`/api/sessions/${id}/run`, { taskIds, failedOnly });
+      if (snapshot && JSON.stringify(options) !== JSON.stringify(snapshot.session.options))
+        await api(`/api/sessions/${id}`, { options }, undefined, 'PATCH');
+      await api(`/api/sessions/${id}/run`, { taskIds, failedOnly, mode });
+      if (activeRef.current === id) setCheckedIds([]);
       await refresh(id);
     });
   }
@@ -276,14 +266,53 @@ export function App() {
       await refresh(activeId);
     });
   }
-  const tasks = snapshot?.tasks || [];
+  async function saveSettings() {
+    const id = activeId;
+    await perform(async () => {
+      await api(
+        `/api/sessions/${id}`,
+        { name: sessionName, targetUrl: target, options },
+        undefined,
+        'PATCH',
+      );
+      await refresh(id);
+    });
+  }
+  async function patchTask(task: Task, patch: object) {
+    const id = activeId;
+    await perform(async () => {
+      await api(
+        `/api/sessions/${id}/tasks/${task.id}`,
+        { ...patch, expectedRevision: task.revision || 1 },
+        undefined,
+        'PATCH',
+      );
+      setCheckedIds([]);
+      await refresh(id);
+    });
+  }
+  const allTasks = snapshot?.tasks || [];
+  const tasks = allTasks.filter((task) => !task.archived);
+  const selectedIds = checkedIds.filter((id) =>
+    allTasks.some((task) => task.id === id && runnableTask(task)),
+  );
+  const settingsDirty = Boolean(
+    snapshot &&
+    (sessionName !== snapshot.session.name ||
+      target !== snapshot.session.targetUrl ||
+      JSON.stringify(options) !== JSON.stringify(snapshot.session.options)),
+  );
   const passed = tasks.filter((t) => t.status === 'passed').length;
   const failed = tasks.filter((t) => t.status === 'failed').length;
   const done = passed + failed;
-  const selected = tasks.find((t) => t.id === taskId);
-  const visibleTasks = tasks.filter(
+  const selected = allTasks.find((t) => t.id === taskId);
+  const visibleTasks = allTasks.filter(
     (t) =>
-      (filter === 'all' || t.status === filter) &&
+      (filter === 'archived'
+        ? t.archived
+        : !t.archived &&
+          (filter === 'all' ||
+            (filter === 'disabled' ? t.enabled === false : t.status === filter))) &&
       `${t.title} ${t.url}`.toLowerCase().includes(query.toLowerCase()),
   );
   const events = snapshot?.events || [];
@@ -299,7 +328,7 @@ export function App() {
           <span>
             巡测<span className="brand-en">EXPLORER</span>
           </span>
-          <span className="version">α</span>
+          <span className="version">0.2</span>
         </a>
         <button className="new-session" onClick={() => void newSession()} disabled={sending}>
           <Plus size={17} /> 新建探索
@@ -321,7 +350,7 @@ export function App() {
             >
               <MessageSquare size={15} />
               <span>{session.name}</span>
-              {['running', 'discovering'].includes(session.status) && <span className="live-dot" />}
+              {busyStatuses.includes(session.status) && <span className="live-dot" />}
             </button>
           ))}
           {!sessions.length && <p className="sidebar-empty">探索记录将保存在这里</p>}
@@ -396,7 +425,9 @@ export function App() {
                 placeholder="输入测试站点，例如 http://localhost:3000"
                 value={target}
                 onChange={(e) => setTarget(e.target.value)}
-                disabled={busy || Boolean(tasks.length)}
+                disabled={
+                  !snapshot || snapshot.session.id !== activeId || busy || Boolean(allTasks.length)
+                }
               />
               <button
                 className="target-settings"
@@ -420,6 +451,15 @@ export function App() {
                   </button>
                 </div>
                 <div className="settings-grid">
+                  <label>
+                    会话名称
+                    <input
+                      value={sessionName}
+                      maxLength={80}
+                      disabled={busy}
+                      onChange={(event) => setSessionName(event.target.value)}
+                    />
+                  </label>
                   <label>
                     结构化执行器
                     <select
@@ -487,8 +527,15 @@ export function App() {
                   </span>
                 </div>
                 <p className="settings-note">
-                  模型通过服务端 .env 配置。探索设置在下次发送目标时生效。
+                  模型通过服务端 .env 配置。保存设置后立即生效；运行只读任务不会自动增加登录动作。
                 </p>
+                <button
+                  className="button-primary compact"
+                  disabled={busy || sending || !settingsDirty}
+                  onClick={() => void saveSettings()}
+                >
+                  {settingsDirty ? '保存设置' : '设置已保存'}
+                </button>
               </div>
             )}
             {error && (
@@ -512,6 +559,7 @@ export function App() {
                 onCancel={stop}
               />
             )}
+            {snapshot && <JobPanel snapshot={snapshot} runtime={runtime} onSession={setActiveId} />}
             {!snapshot?.session.options.allowWrites &&
               snapshot?.pages.some((page) =>
                 page.inputs?.some((input) => input.type === 'password'),
@@ -598,7 +646,38 @@ export function App() {
                   ))}
                 </div>
                 <div className="toolbar-actions">
-                  {tasks.length > 0 && (
+                  <button
+                    className="icon-button"
+                    aria-label="新建任务"
+                    title="新建任务"
+                    disabled={busy || sending || !snapshot?.session.targetUrl}
+                    onClick={() => setEditor('new')}
+                  >
+                    <Plus size={17} />
+                  </button>
+                  {Boolean(snapshot?.pages.length) && !busy && (
+                    <button
+                      className="toolbar-text"
+                      disabled={sending}
+                      onClick={() => void send('重新规划当前测试目标')}
+                    >
+                      重新规划
+                    </button>
+                  )}
+                  {!busy &&
+                    tasks.some(
+                      (task) =>
+                        runnableTask(task) && ['pending', 'cancelled'].includes(task.status),
+                    ) && (
+                      <button
+                        className="toolbar-text"
+                        disabled={sending}
+                        onClick={() => void run(undefined, false, 'continue')}
+                      >
+                        继续未完成
+                      </button>
+                    )}
+                  {allTasks.length > 0 && (
                     <a
                       className="icon-button"
                       title="下载 JSON 报告"
@@ -618,7 +697,7 @@ export function App() {
                     <button
                       className="button-primary compact"
                       onClick={() => void run()}
-                      disabled={sending}
+                      disabled={sending || !tasks.some(runnableTask)}
                     >
                       <ArrowRight size={14} />
                       运行全部
@@ -631,7 +710,7 @@ export function App() {
                   <LoaderCircle className="spin" size={25} />
                   <p>正在载入工作空间…</p>
                 </div>
-              ) : tab === 'tasks' && tasks.length === 0 ? (
+              ) : tab === 'tasks' && allTasks.length === 0 ? (
                 <div className="empty-state">
                   <div className="empty-visual">
                     <span className="orbit orbit-one" />
@@ -691,6 +770,8 @@ export function App() {
                         { value: 'failed', label: '失败' },
                         { value: 'passed', label: '通过' },
                         { value: 'pending', label: '待执行' },
+                        { value: 'disabled', label: '已停用' },
+                        { value: 'archived', label: '已归档' },
                       ].map((item) => (
                         <button
                           className={filter === item.value ? 'active' : ''}
@@ -711,6 +792,46 @@ export function App() {
                       />
                     </label>
                   </div>
+                  <div className="bulk-toolbar">
+                    <label>
+                      <input
+                        type="checkbox"
+                        aria-label="选择当前筛选任务"
+                        disabled={busy || !visibleTasks.some(runnableTask)}
+                        checked={
+                          visibleTasks.filter(runnableTask).length > 0 &&
+                          visibleTasks
+                            .filter(runnableTask)
+                            .every((task) => selectedIds.includes(task.id))
+                        }
+                        onChange={(event) =>
+                          setCheckedIds((current) =>
+                            event.target.checked
+                              ? [
+                                  ...new Set([
+                                    ...current,
+                                    ...visibleTasks.filter(runnableTask).map((task) => task.id),
+                                  ]),
+                                ]
+                              : current.filter(
+                                  (id) => !visibleTasks.some((task) => task.id === id),
+                                ),
+                          )
+                        }
+                      />
+                      选择当前筛选任务
+                    </label>
+                    <span>已选 {selectedIds.length} 项</span>
+                    <button
+                      disabled={busy || sending || !selectedIds.length}
+                      onClick={() => void run(selectedIds)}
+                    >
+                      运行选中
+                    </button>
+                    {selectedIds.length > 0 && (
+                      <button onClick={() => setCheckedIds([])}>清空选择</button>
+                    )}
+                  </div>
                   <div className="task-table">
                     <div className="table-head">
                       <span>任务 / 验证目标</span>
@@ -719,31 +840,49 @@ export function App() {
                       <span />
                     </div>
                     {visibleTasks.map((task) => (
-                      <button
-                        key={task.id}
-                        className={`task-row ${taskId === task.id ? 'selected' : ''}`}
-                        onClick={() => setTaskId(task.id)}
-                      >
-                        <span className="task-summary">
-                          <StatusIcon status={task.status} />
-                          <span>
-                            <strong>{task.title}</strong>
-                            <small>
-                              {kindNames[task.kind]}
-                              <i /> {shortUrl(task.url)}
-                              <i />
-                              {engineNames[task.engine]}
-                            </small>
+                      <div className="task-row-wrap" key={task.id}>
+                        <input
+                          type="checkbox"
+                          aria-label={`选择任务 ${task.title}`}
+                          disabled={busy || !runnableTask(task)}
+                          checked={selectedIds.includes(task.id)}
+                          onChange={(event) =>
+                            setCheckedIds((current) =>
+                              event.target.checked
+                                ? [...current, task.id]
+                                : current.filter((id) => id !== task.id),
+                            )
+                          }
+                        />
+                        <button
+                          className={`task-row ${taskId === task.id ? 'selected' : ''}`}
+                          onClick={() => setTaskId(task.id)}
+                        >
+                          <span className="task-summary">
+                            <StatusIcon status={task.status} />
+                            <span>
+                              <strong>{task.title}</strong>
+                              <small>
+                                {kindNames[task.kind]}
+                                <i /> {shortUrl(task.url)}
+                                <i />
+                                {engineNames[task.engine]}
+                              </small>
+                            </span>
                           </span>
-                        </span>
-                        <span className={`priority ${task.priority.toLowerCase()}`}>
-                          {task.priority}
-                        </span>
-                        <span className={`status-label ${task.status}`}>
-                          {statusNames[task.status]}
-                        </span>
-                        <ChevronRight size={15} />
-                      </button>
+                          <span className={`priority ${task.priority.toLowerCase()}`}>
+                            {task.priority}
+                          </span>
+                          <span className={`status-label ${task.status}`}>
+                            {task.archived
+                              ? '已归档'
+                              : task.enabled === false
+                                ? '已停用'
+                                : statusNames[task.status]}
+                          </span>
+                          <ChevronRight size={15} />
+                        </button>
+                      </div>
                     ))}
                     {visibleTasks.length === 0 && <p className="no-matches">没有符合条件的任务</p>}
                   </div>
@@ -845,7 +984,11 @@ export function App() {
                   <span />
                   {snapshot?.session.status === 'waiting_input'
                     ? '等待手动输入验证码'
-                    : `正在${snapshot?.session.status === 'discovering' ? '观察站点' : '验证任务'}`}
+                    : snapshot?.session.status === 'queued'
+                      ? '等待前方作业完成'
+                      : snapshot?.session.status === 'planning'
+                        ? '正在规划任务'
+                        : `正在${snapshot?.session.status === 'discovering' ? '观察站点' : '验证任务'}`}
                 </div>
               )}
               <div ref={chatEnd} />
@@ -927,6 +1070,7 @@ export function App() {
       </div>
       {selected && snapshot && (
         <TaskDetail
+          key={selected.id}
           task={selected}
           snapshot={snapshot}
           busy={Boolean(busy || sending)}
@@ -934,6 +1078,26 @@ export function App() {
           onRun={() => void run([selected.id])}
           onRefresh={() => refresh(activeId)}
           onCancel={stop}
+          onEdit={() => {
+            setEditor(selected);
+            setTaskId('');
+          }}
+          onPatch={(patch) => void patchTask(selected, patch)}
+          actionError={error}
+        />
+      )}
+      {editor && snapshot && (
+        <TaskEditor
+          key={editor === 'new' ? 'new' : `${editor.id}-${editor.revision || 1}`}
+          task={editor === 'new' ? undefined : editor}
+          session={snapshot.session}
+          config={config}
+          onClose={() => setEditor(null)}
+          onSaved={async (next) => {
+            await refresh(next.sessionId);
+            setEditor(null);
+            if (activeRef.current === next.sessionId) setTaskId(next.id);
+          }}
         />
       )}
     </div>
@@ -1044,6 +1208,9 @@ function TaskDetail({
   onRun,
   onRefresh,
   onCancel,
+  onEdit,
+  onPatch,
+  actionError,
 }: {
   task: Task;
   snapshot: Snapshot;
@@ -1052,6 +1219,9 @@ function TaskDetail({
   onRun: () => void;
   onRefresh: () => Promise<void>;
   onCancel: () => Promise<void>;
+  onEdit: () => void;
+  onPatch: (patch: object) => void;
+  actionError: string;
 }) {
   const runs = snapshot.runs.filter((run) => run.taskId === task.id).reverse();
   const [runId, setRunId] = useState('');
@@ -1119,9 +1289,28 @@ function TaskDetail({
             <span>{kindNames[task.kind]}</span>
             <span>{engineNames[task.engine]}</span>
             <span>{{ dom: 'DOM 发现', model: '模型规划', manual: '手动创建' }[task.source]}</span>
+            {task.edited && <span>已自定义</span>}
           </div>
           <h2 id="task-detail-title">{task.title}</h2>
           <p className="detail-description">{task.description}</p>
+          {task.engineNote && <p className="editor-note">{task.engineNote}</p>}
+          {task.risk === 'write' && !snapshot.session.options.allowWrites && (
+            <p className="editor-note">
+              该任务包含交互操作。保存草稿不会授予执行权限，请在探索设置允许交互后运行。
+            </p>
+          )}
+          <div className="task-management">
+            <span>任务版本 v{task.revision || 1}</span>
+            <button disabled={busy} onClick={onEdit}>
+              编辑任务
+            </button>
+            <button disabled={busy} onClick={() => onPatch({ enabled: task.enabled === false })}>
+              {task.enabled === false ? '启用任务' : '停用任务'}
+            </button>
+            <button disabled={busy} onClick={() => onPatch({ archived: !task.archived })}>
+              {task.archived ? '恢复任务' : '归档任务'}
+            </button>
+          </div>
           <a className="detail-url" href={task.url} target="_blank" rel="noreferrer">
             <Globe2 size={14} />
             {task.url}
@@ -1157,6 +1346,21 @@ function TaskDetail({
               </select>
             )}
           </div>
+          {actionError && (
+            <p className="error-banner" role="alert">
+              {actionError}
+            </p>
+          )}
+          {snapshot.jobs?.some(
+            (job) =>
+              busyStatuses.includes(job.status) &&
+              job.taskIds.includes(task.id) &&
+              job.activeTaskId !== task.id,
+          ) && (
+            <p className="editor-note">
+              当前任务正在等待执行。下方展示的是之前的执行记录，开始运行后会显示新结果。
+            </p>
+          )}
           {latest ? (
             <>
               {latest.pendingInput && latest.status === 'waiting_input' && (
@@ -1185,7 +1389,40 @@ function TaskDetail({
                   </a>
                 </p>
               )}
+              {latest.diagnosis && (
+                <div className="diagnosis-panel">
+                  <strong>{latest.diagnosis.title}</strong>
+                  <p>{latest.diagnosis.advice}</p>
+                  {latest.failedStep && (
+                    <p>
+                      失败位置：步骤 {latest.failedStep.index + 1} · {latest.failedStep.action}
+                    </p>
+                  )}
+                  <button disabled={busy} onClick={onEdit}>
+                    编辑此任务
+                  </button>
+                </div>
+              )}
               {latest.error && <pre className="error-detail">{latest.error}</pre>}
+              {latest.taskSnapshot && (
+                <details className="run-definition">
+                  <summary>
+                    本记录使用任务 v{latest.taskRevision || 1}
+                    {(latest.taskRevision || 1) !== (task.revision || 1)
+                      ? '（当前任务已修订）'
+                      : ''}
+                  </summary>
+                  <strong>{latest.taskSnapshot.title}</strong>
+                  <ol className="step-list">
+                    {latest.taskSnapshot.steps.map((step, index) => (
+                      <li key={index}>
+                        <span>{index + 1}</span>
+                        {stepLabel(step)}
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
               {latest.screenshot && (
                 <a
                   href={latest.screenshot}
@@ -1240,7 +1477,14 @@ function TaskDetail({
             <Check size={14} />
             结果与历史保存在本机
           </span>
-          <button className="button-primary" disabled={busy} onClick={onRun}>
+          <button
+            className="button-primary"
+            disabled={busy || !runnableTask(task)}
+            onClick={() => {
+              setRunId('');
+              onRun();
+            }}
+          >
             <RotateCcw size={15} />
             运行此任务
           </button>

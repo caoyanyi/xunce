@@ -203,6 +203,14 @@ By default, browser requests that modify state are blocked, as are arbitrary cli
 
 Model features send page observations or screenshots to your configured provider. These requests occur only when you configure and use those features.
 
+### Login challenges and URL assertions
+
+Use `assertUrl` to check the browser address and a separate visual assertion for page content. Visual assertions also receive the actual browser URL as context. Playwright/Midscene runs save `actualUrl`, displayed as **Actual URL** (`实际 URL`) in task details.
+
+When Xunce detects an empty, visible image-code field in an invalid state after an interaction, a failed assertion includes `failureCode: "captcha_required"` and an explanation of the unmet prerequisite. The original error, screenshot, and trace are preserved. A test that expects required-code validation can still pass; unsuccessful login is never converted into a pass.
+
+Automated successful-login tests need explicit application-owned test configuration, such as a fixed test verification value or a test-only login entry point. Supply the authorized conditions in the test goal. Xunce does not solve or guess CAPTCHAs, and rerunning does not provide the missing prerequisite. Each task uses an isolated browser context; logging in manually in your own browser does not authenticate the worker.
+
 ## Data and API
 
 The default native data layout is:
@@ -260,7 +268,7 @@ npm audit
 
 The test suite covers execution boundaries, planner-output validation, SQLite restart recovery, real browser discovery, form assertions, HTTP failures, the official TesterArmy runner, the full API workflow, concurrency, cancellation, and rerun history. UI E2E tests exercise the conversation-to-results flow, failure evidence, reruns, persistence, and mobile layout, producing screenshots in `docs/screenshots/`.
 
-`npm run test:e2e` builds the app and starts an isolated test service. The commands above explicitly disable configured models so tests use the built-in store and local mock providers without calling your paid providers, even if `.env` contains model credentials. `npm run format` formats the source. The latest recorded verification has **63 passing unit/integration tests** and **3 passing UI E2E tests**. The initial backend/shared-code line-coverage record was **89.74%**. Details are in the [verification record (Chinese)](docs/verification.md).
+`npm run test:e2e` builds the app and starts an isolated test service. The commands above explicitly disable configured models so tests use the built-in store and local mock providers without calling your paid providers, even if `.env` contains model credentials. `npm run format` formats the source. The latest recorded verification has **78 passing unit/integration tests** and **3 passing UI E2E tests**. The initial backend/shared-code line-coverage record was **89.74%**. Details are in the [verification record (Chinese)](docs/verification.md).
 
 ## Current scope and roadmap
 

@@ -16,6 +16,9 @@ test('conversation drives discovery, execution, evidence and failed-task reruns'
   await page.getByRole('button', { name: /活动暂不可用/ }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.locator('.error-detail')).toBeVisible();
+  await expect(
+    dialog.locator('.detail-url').filter({ hasText: '实际 URL：' }).getByRole('link'),
+  ).toHaveAttribute('href', 'http://127.0.0.1:4319/demo/sale');
   await expect(dialog.getByRole('img')).toBeVisible();
   await page.screenshot({ path: 'docs/screenshots/failed-task.png', fullPage: true });
   await dialog.getByRole('button', { name: '运行此任务' }).click();

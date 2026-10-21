@@ -13,10 +13,31 @@ vi.mock('@midscene/web/playwright', () => ({
     async aiAct(_instruction: string, options: { abortSignal: AbortSignal }) {
       options.abortSignal.throwIfAborted();
       await this.page.getByLabel('邮箱').fill('qa@example.test');
+      if (_instruction === 'trigger-captcha') {
+        await this.page.evaluate(() => {
+          const field = document.createElement('input');
+          field.placeholder = 'Enter image code';
+          field.setAttribute('aria-label', 'Enter image code');
+          field.setAttribute('aria-invalid', 'true');
+          document.forms[0].append(field);
+        });
+      }
     }
-    async aiAssert(instruction: string, _message: unknown, options: { abortSignal: AbortSignal }) {
+    async aiAssert(
+      instruction: string,
+      _message: unknown,
+      options: { abortSignal: AbortSignal; context?: string },
+    ) {
       options.abortSignal.throwIfAborted();
       if (instruction === 'force-fail') throw new Error('视觉断言未满足');
+      if (instruction === 'check-browser-url') {
+        expect(options.context).toContain(this.page.url());
+        return;
+      }
+      if (instruction === 'captcha-validation-visible') {
+        expect(await this.page.getByLabel('Enter image code').inputValue()).toBe('');
+        return;
+      }
       expect(await this.page.getByLabel('邮箱').inputValue()).toBe('qa@example.test');
     }
     async destroy() {
@@ -39,6 +60,73 @@ afterAll(async () => {
   if (env) await rm(env.dir, { recursive: true, force: true });
 });
 describe('Midscene SDK contract (model mocked)', () => {
+  it('supplies the actual browser URL to visual assertions and preserves it as evidence', async () => {
+    const url = `${env.base}/demo/login`;
+    const s = session(url);
+    const evidence = await executeTask(
+      task(url, {
+        engine: 'midscene',
+        steps: [
+          { action: 'goto', url },
+          { action: 'aiAssert', instruction: 'check-browser-url' },
+        ],
+      }),
+      s,
+      'url-facts',
+      `${env.dir}/artifacts/${s.id}/url-facts`,
+      new AbortController().signal,
+      () => {},
+    );
+    expect(evidence).toMatchObject({ actualUrl: url });
+  });
+  it('identifies an unmet image CAPTCHA prerequisite without hiding the failed assertion', async () => {
+    const url = `${env.base}/demo/login`;
+    const s = session(url);
+    s.options.allowWrites = true;
+    await expect(
+      executeTask(
+        task(url, {
+          engine: 'midscene',
+          steps: [
+            { action: 'goto', url },
+            { action: 'aiAct', instruction: 'trigger-captcha' },
+            { action: 'aiAssert', instruction: 'force-fail' },
+          ],
+        }),
+        s,
+        'captcha-fail',
+        `${env.dir}/artifacts/${s.id}/captcha-fail`,
+        new AbortController().signal,
+        () => {},
+      ),
+    ).rejects.toMatchObject({
+      failureCode: 'captcha_required',
+      message: expect.stringContaining('验证码'),
+      evidence: { actualUrl: url, screenshot: expect.any(String) },
+    });
+  });
+  it('allows a successful assertion about CAPTCHA validation feedback', async () => {
+    const url = `${env.base}/demo/login`;
+    const s = session(url);
+    s.options.allowWrites = true;
+    await expect(
+      executeTask(
+        task(url, {
+          engine: 'midscene',
+          steps: [
+            { action: 'goto', url },
+            { action: 'aiAct', instruction: 'trigger-captcha' },
+            { action: 'aiAssert', instruction: 'captcha-validation-visible' },
+          ],
+        }),
+        s,
+        'captcha-expected',
+        `${env.dir}/artifacts/${s.id}/captcha-expected`,
+        new AbortController().signal,
+        () => {},
+      ),
+    ).resolves.toHaveProperty('screenshot');
+  });
   it('delegates actions and assertions with cancellation signals and preserves a portable report', async () => {
     const url = `${env.base}/demo/login`;
     const s = session(url);

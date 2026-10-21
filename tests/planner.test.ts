@@ -26,6 +26,24 @@ const visual = {
   ],
 };
 describe('evidence-grounded planning', () => {
+  it('accepts a deterministic browser URL assertion as an outcome', () => {
+    const [task] = parseModelTasks(
+      {
+        tasks: [
+          {
+            ...visual,
+            steps: [
+              { action: 'goto', url: page.url },
+              { action: 'assertUrl', url: page.url },
+            ],
+          },
+        ],
+      },
+      s,
+      [page],
+    );
+    expect(task.steps.at(-1)).toEqual({ action: 'assertUrl', url: page.url });
+  });
   it('generates deterministic tasks with actual assertions and explicit engines', () => {
     const tasks = tasksFromPages(s, [page]);
     expect(tasks).toHaveLength(2);

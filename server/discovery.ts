@@ -55,6 +55,24 @@ export async function discover(
               required: form.querySelectorAll('[required]:not([disabled]):not([type="hidden"])')
                 .length,
             })),
+          inputs: Array.from(
+            document.querySelectorAll<HTMLInputElement>('input:not([type="hidden"])'),
+          )
+            .filter((input) => input.getClientRects().length > 0)
+            .slice(0, 30)
+            .map((input) => ({
+              label: (
+                input.getAttribute('aria-label') ||
+                Array.from(input.labels || [])
+                  .map((label) => label.textContent)
+                  .join(' ')
+                  .trim() ||
+                input.placeholder ||
+                input.name
+              ).slice(0, 150),
+              type: input.type,
+              required: input.required || input.getAttribute('aria-required') === 'true',
+            })),
         }));
         Object.assign(result, dom);
         result.links = result.links

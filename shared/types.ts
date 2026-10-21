@@ -54,6 +54,7 @@ export interface Observation {
   depth: number;
   links: { text: string; url: string }[];
   forms: { index: number; name: string; required: number }[];
+  inputs?: { label: string; type: string; required: boolean }[];
   text: string;
   error?: string;
   screenshot?: string;
@@ -83,6 +84,8 @@ export interface Run {
   finishedAt?: string;
   durationMs?: number;
   error?: string;
+  actualUrl?: string;
+  failureCode?: 'captcha_required';
   screenshot?: string;
   trace?: string;
   report?: string;

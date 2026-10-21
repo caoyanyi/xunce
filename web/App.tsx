@@ -1019,6 +1019,15 @@ function TaskDetail({
                     : '执行中'}
                 </span>
               </div>
+              {latest.actualUrl && (
+                <p className="detail-url">
+                  <Globe2 size={14} />
+                  <span>实际 URL：</span>
+                  <a href={latest.actualUrl} target="_blank" rel="noreferrer">
+                    {latest.actualUrl}
+                  </a>
+                </p>
+              )}
               {latest.error && <pre className="error-detail">{latest.error}</pre>}
               {latest.screenshot && (
                 <a

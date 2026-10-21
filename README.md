@@ -261,8 +261,8 @@ npm audit
 
 按指定地址调研：
 
-- [tester-army/e2e](https://githubfast.com/tester-army/e2e)：实际使用 npm `e2e` 与 `@e2e-dev/web`，上游 Apache-2.0。
-- [Midscene.js](https://githubfast.com/web-infra-dev/midscene)：实际使用 npm `@midscene/web`，上游 MIT。
-- [autonomous-qa-agent](https://githubfast.com/iklymchuk/autonomous-qa-agent)：参考 BFS、用户流发现与证据报告思路；没有复制或执行其 Python 源码。
+- [tester-army/e2e](https://github.com/tester-army/e2e)：实际使用 npm `e2e` 与 `@e2e-dev/web`，上游 Apache-2.0。
+- [Midscene.js](https://github.com/web-infra-dev/midscene)：实际使用 npm `@midscene/web`，上游 MIT。
+- [autonomous-qa-agent](https://github.com/iklymchuk/autonomous-qa-agent)：参考 BFS、用户流发现与证据报告思路；没有复制或执行其 Python 源码。
 
 平台代码独立实现；上游依赖保留各自许可。

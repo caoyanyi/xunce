@@ -17,11 +17,11 @@ created: 2026-10-21
 
 调研来源（2026-10-21）：
 
-| 项目                                                                        | 已确认能力                                                                                                          | 采用方式                                                                                                 |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| [tester-army/e2e](https://githubfast.com/tester-army/e2e)                   | TypeScript `test`/`expect`、结构化 runner、Web engine、agent 步骤、断言后缓存重放；npm 包为 `e2e` 和 `@e2e-dev/web` | 独立执行适配器，生成可审计测试文件，运行已安装的本地 CLI，解析机器可读结果。禁止执行模型生成的任意代码。 |
-| [Midscene.js](https://githubfast.com/web-infra-dev/midscene)                | `PlaywrightAgent`、`aiAct`/`aiAssert`、视觉定位、HTML 报告                                                          | 独立视觉执行适配器，使用官方 SDK 与隔离 browser context；密钥只从环境读取。                              |
-| [autonomous-qa-agent](https://githubfast.com/iklymchuk/autonomous-qa-agent) | 同源 BFS、DOM 提取、用户流推理、优先级、失败分类、截图/trace                                                        | 借鉴“观察→发现→规划→执行→证据”的循环，平台自己实现任务、状态和控制台；不直接运行其生成的 Python。        |
+| 项目                                                                    | 已确认能力                                                                                                          | 采用方式                                                                                                 |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [tester-army/e2e](https://github.com/tester-army/e2e)                   | TypeScript `test`/`expect`、结构化 runner、Web engine、agent 步骤、断言后缓存重放；npm 包为 `e2e` 和 `@e2e-dev/web` | 独立执行适配器，生成可审计测试文件，运行已安装的本地 CLI，解析机器可读结果。禁止执行模型生成的任意代码。 |
+| [Midscene.js](https://github.com/web-infra-dev/midscene)                | `PlaywrightAgent`、`aiAct`/`aiAssert`、视觉定位、HTML 报告                                                          | 独立视觉执行适配器，使用官方 SDK 与隔离 browser context；密钥只从环境读取。                              |
+| [autonomous-qa-agent](https://github.com/iklymchuk/autonomous-qa-agent) | 同源 BFS、DOM 提取、用户流推理、优先级、失败分类、截图/trace                                                        | 借鉴“观察→发现→规划→执行→证据”的循环，平台自己实现任务、状态和控制台；不直接运行其生成的 Python。        |
 
 两个执行项目都有 agent 能力，并非必须嵌套；平台用统一 Task/Step/Result 协议组合各自优势。确定性的 smoke/navigation/form-validation 任务走结构化执行；需要截图语义的多步业务流走 Midscene。首版保留直接 Playwright 执行作为无模型的确定性基线及探索引擎，执行器身份必须真实展示。
 

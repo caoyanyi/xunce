@@ -1,0 +1,17 @@
+node_modules
+.git
+.agents
+.codex
+.env
+.env.*
+!.env.example
+data
+dist
+build
+coverage
+playwright-report
+test-results
+midscene_run
+.e2e
+*.log
+docs

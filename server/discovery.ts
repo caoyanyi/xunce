@@ -5,6 +5,7 @@ import type { Observation, Session, Task } from '../shared/types.ts';
 import { now } from '../shared/types.ts';
 import { withBrowser } from './browser.ts';
 import { errorMessage, inScope, isSafeNavigation, throwIfAborted } from './policy.ts';
+import { PageReadiness } from './page-readiness.ts';
 
 export async function discover(
   session: Session,
@@ -19,6 +20,7 @@ export async function discover(
     const queue = [{ url: session.targetUrl, depth: 0 }];
     const seen = new Set<string>();
     const page = await context.newPage();
+    const readiness = new PageReadiness(page, session.targetUrl);
     while (queue.length && pages.length < session.options.maxPages) {
       throwIfAborted(signal);
       const next = queue.shift()!;
@@ -36,8 +38,9 @@ export async function discover(
       };
       try {
         const response = await page.goto(next.url, { waitUntil: 'domcontentloaded' });
-        await page.locator('body').waitFor();
         result.status = response?.status() ?? 200;
+        if (result.status < 400) await readiness.wait(signal);
+        result.actualUrl = page.url();
         const dom = await page.evaluate(() => ({
           title: document.title,
           text: (document.querySelector('main') ?? document.body).innerText.slice(0, 6000),
@@ -98,6 +101,7 @@ export async function discover(
       pages.push(result);
       onPage(result);
     }
+    readiness.close();
     return pages;
   });
 }

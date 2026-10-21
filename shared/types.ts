@@ -49,6 +49,7 @@ export interface Observation {
   id: string;
   sessionId: string;
   url: string;
+  actualUrl?: string;
   title: string;
   status: number;
   depth: number;
@@ -95,7 +96,7 @@ export interface Run {
   durationMs?: number;
   error?: string;
   actualUrl?: string;
-  failureCode?: 'captcha_required';
+  failureCode?: 'captcha_required' | 'page_not_ready';
   screenshot?: string;
   trace?: string;
   report?: string;

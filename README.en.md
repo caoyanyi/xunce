@@ -205,6 +205,10 @@ Model features send page observations or screenshots to your configured provider
 
 ### Login challenges and URL assertions
 
+Login requires writable interaction. A read-only session checks the login interface without filling credentials or submitting the form. When a password field is discovered, the console explains this limitation. Click **Enable interaction and plan login** (`允许交互并规划登录`) to enable interaction and replan using test credentials previously supplied in this session. Rerunning old read-only tasks does not add login actions. Subsequent planning includes recent user messages, with the latest goal taking priority. Each task has an isolated browser; keep login and authenticated checks in the same task.
+
+After navigation, Xunce waits for visible application content to settle before taking model screenshots. Playwright/Midscene also wait for same-origin document, script, and stylesheet requests, with a 20-second limit. Persistently blank/loading pages produce `page_not_ready` with resource and script error counts. This gate checks rendering; successful login still requires outcome assertions. Discovery supplies both the entry `url` and redirected `actualUrl` to the planner for URL checks.
+
 Use `assertUrl` to check the browser address and a separate visual assertion for page content. Visual assertions also receive the actual browser URL as context. Playwright/Midscene runs save `actualUrl`, displayed as **Actual URL** (`实际 URL`) in task details.
 
 Xunce supports **human CAPTCHA input followed by test continuation**. Enable writable interaction and use Playwright or Midscene. When an action or outcome assertion is blocked by an image CAPTCHA and Xunce can identify a unique CAPTCHA input and login button, the run enters `waiting_input`. The workspace and task details show a screenshot and input card. Enter the code and click **Submit and continue** (`提交并继续`); Xunce fills the live input, submits the current login form, and checks the original URL/page assertions.

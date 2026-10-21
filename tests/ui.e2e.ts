@@ -1,5 +1,47 @@
 import { test, expect } from '@playwright/test';
 import { startCaptchaFixture } from './captcha-fixture.ts';
+test('read-only login discovery explains why login cannot run and requires an explicit interaction action', async ({
+  page,
+}) => {
+  const fixture = await startCaptchaFixture();
+  let sessionId = '';
+  try {
+    const session = await (
+      await page.request.post('/api/sessions', {
+        data: {
+          targetUrl: `${fixture.base}/login`,
+          options: { engine: 'playwright', maxPages: 1 },
+        },
+      })
+    ).json();
+    sessionId = session.id;
+    await page.request.post(`/api/sessions/${sessionId}/chat`, {
+      data: { message: '只探索登录页面' },
+    });
+    await page.goto('/');
+    await page.evaluate((id) => localStorage.setItem('explorer-session', id), sessionId);
+    await page.reload();
+    const enable = page.getByRole('button', { name: '允许交互并规划登录', exact: true });
+    await expect(enable).toBeEnabled({ timeout: 30000 });
+    await expect(page.getByRole('note')).toContainText('当前为只读模式，不会自动登录');
+    const before = await (await page.request.get(`/api/sessions/${sessionId}`)).json();
+    expect(before.session.options.allowWrites).toBe(false);
+    expect(fixture.submissions).toHaveLength(0);
+    const response = page.waitForResponse(
+      (r) => r.url().endsWith(`/api/sessions/${sessionId}/chat`) && r.request().method() === 'POST',
+    );
+    await enable.click();
+    const accepted = await response;
+    expect(accepted.status()).toBe(202);
+    expect(accepted.request().postDataJSON().options.allowWrites).toBe(true);
+    await expect(page.getByRole('note')).toHaveCount(0);
+    await expect(page.locator('.session-status')).toHaveText('已完成', { timeout: 30000 });
+    expect(fixture.submissions).toHaveLength(0); // No credentials/model were supplied to this fixture.
+  } finally {
+    if (sessionId) await page.request.post(`/api/sessions/${sessionId}/cancel`, { data: {} });
+    await fixture.close();
+  }
+});
 test('human CAPTCHA input survives a console reload and resumes the same run', async ({ page }) => {
   const fixture = await startCaptchaFixture(true);
   try {

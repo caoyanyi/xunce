@@ -5,6 +5,7 @@ import type { RunResult } from 'e2e/runner';
 import type { Session, Task } from '../shared/types.ts';
 import { resolveChromiumPath } from './browser.ts';
 import { throwIfAborted } from './policy.ts';
+import { renderingFingerprint } from './page-readiness.ts';
 
 export function generateTest(task: Task, session: Session): string {
   // Only validated JSON values are interpolated. All executable code is this fixed template.
@@ -13,6 +14,7 @@ import { expect } from 'e2e';
 const steps = ${JSON.stringify(task.steps, null, 2)};
 const origin = ${JSON.stringify(new URL(session.targetUrl).origin)};
 const allowWrites = ${JSON.stringify(session.options.allowWrites)};
+const renderingProbe = ${JSON.stringify(renderingFingerprint.toString())};
 test(${JSON.stringify(task.title)}, async ({ app, browser, screen }) => {
   await browser.goto('about:blank');
   await browser.route('**/*', async route => {
@@ -28,6 +30,16 @@ test(${JSON.stringify(task.title)}, async ({ app, browser, screen }) => {
           const finalStatus = await browser.evaluate(() => (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming & { responseStatus: number })?.responseStatus || 0);
           const status = Math.max(response.status, finalStatus);
           if (status >= 400) throw new Error('HTTP ' + status + ': ' + step.url);
+          const deadline = Date.now() + 20000;
+          let previous = '', stableSince = Date.now(), ready = false;
+          while (Date.now() < deadline) {
+            const state = await browser.evaluate('(' + renderingProbe + ')()').catch(() => '');
+            if (!state || state !== previous) stableSince = Date.now();
+            if (state && Date.now() - stableSince >= 400) { ready = true; break; }
+            previous = state;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          if (!ready) throw new Error('页面在 20 秒内未完成渲染：应用仍为空白或持续加载');
           break;
         }
         case 'assertPage': {

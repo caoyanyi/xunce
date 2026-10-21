@@ -7,6 +7,7 @@ import { midsceneConfigured } from './planner.ts';
 import { runTesterArmy } from './tester-army.ts';
 import { assertionContext, captchaControls, readPageState } from './page-state.ts';
 import { ExecutionBudget } from './manual-input.ts';
+import { PageReadiness } from './page-readiness.ts';
 
 type Evidence = Pick<
   Run,
@@ -42,6 +43,7 @@ export async function executeTask(
       async (context) => {
         await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
         const page = await context.newPage();
+        const readiness = new PageReadiness(page, session.targetUrl);
         let agent: import('@midscene/web/playwright').PlaywrightAgent | undefined;
         let failure: unknown;
         let interactionAttempted = false;
@@ -74,9 +76,11 @@ export async function executeTask(
                 const response = await page.goto(step.url, { waitUntil: 'domcontentloaded' });
                 if (response && response.status() >= 400)
                   throw new Error(`HTTP ${response.status()}：${step.url}`);
+                await readiness.wait(executionSignal);
                 break;
               }
               case 'assertPage': {
+                await readiness.wait(executionSignal);
                 const title = await page.title();
                 const text = (await page.locator('body').innerText()).trim();
                 if (!title.trim()) throw new Error('页面标题为空');
@@ -159,11 +163,13 @@ export async function executeTask(
                 break;
               case 'aiAct':
                 if (!agent) throw new Error('视觉步骤需要 Midscene 执行器');
+                await readiness.wait(executionSignal);
                 interactionAttempted = true;
                 await agent.aiAct(step.instruction, { abortSignal: executionSignal });
                 break;
               case 'aiAssert':
                 if (!agent) throw new Error('视觉断言需要 Midscene 执行器');
+                await readiness.wait(executionSignal);
                 await agent.aiAssert(step.instruction, undefined, {
                   abortSignal: executionSignal,
                   context: assertionContext(guidance, await readPageState(page)),
@@ -256,6 +262,13 @@ export async function executeTask(
           }
           delete evidence.failureCode;
         } catch (error) {
+          if (
+            error &&
+            typeof error === 'object' &&
+            'failureCode' in error &&
+            error.failureCode === 'page_not_ready'
+          )
+            evidence.failureCode = 'page_not_ready';
           failure =
             executionSignal.aborted && !signal.aborted
               ? new Error('任务超过 120 秒执行预算')
@@ -267,7 +280,7 @@ export async function executeTask(
             failure &&
             !signal.aborted &&
             interactionAttempted &&
-            (state.missingImageCaptcha || evidence.failureCode)
+            (state.missingImageCaptcha || evidence.failureCode === 'captcha_required')
           ) {
             evidence.failureCode = 'captcha_required';
             failure = new Error(
@@ -312,6 +325,7 @@ export async function executeTask(
             failure = new Error(message);
           }
           resetMidsceneRunDir?.();
+          readiness.close();
           evidence.report ??= `${prefix}/result.json`;
           await writeFile(
             join(folder, 'result.json'),

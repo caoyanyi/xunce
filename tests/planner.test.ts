@@ -155,10 +155,17 @@ describe('optional planner provider contract', () => {
     vi.stubEnv('MIDSCENE_MODEL_NAME', 'test-vision');
     vi.stubEnv('MIDSCENE_MODEL_FAMILY', 'test-family');
     try {
-      const [result] = await planWithModel('检查首页', s, [page], new AbortController().signal);
+      const [result] = await planWithModel('检查首页', s, [page], new AbortController().signal, [
+        '之前提供的测试账号：qa@example.test',
+      ]);
       expect(result.source).toBe('model');
       expect(result.steps.at(-1)?.action).toBe('aiAssert');
       expect(received?.model).toBe('test-planner');
+      const messages = received?.messages as { role: string; content: string }[];
+      const goal = JSON.parse(messages.find((message) => message.role === 'user')!.content);
+      expect(goal.previousUserMessages).toContain('qa@example.test');
+      expect(goal.intent).toBe('检查首页');
+      expect(messages[0].content).toContain('isolated browser');
       expect(JSON.stringify(received)).not.toContain('test-only-placeholder');
       mode = 'error';
       await expect(

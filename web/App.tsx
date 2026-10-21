@@ -245,7 +245,7 @@ export function App() {
       setTab('tasks');
     });
   }
-  async function send(text = message, useDemo = false) {
+  async function send(text = message, useDemo = false, nextOptions = options) {
     if (!text.trim() || !activeId) return;
     const id = activeId;
     await perform(async () => {
@@ -253,10 +253,11 @@ export function App() {
       await api(`/api/sessions/${id}/chat`, {
         message: text,
         ...(targetUrl ? { targetUrl } : {}),
-        options,
+        options: nextOptions,
       });
       if (activeRef.current === id) {
         setMessage('');
+        setOptions(nextOptions);
         if (useDemo && config) setTarget(config.demoUrl);
       }
       await refresh(id);
@@ -511,6 +512,33 @@ export function App() {
                 onCancel={stop}
               />
             )}
+            {!snapshot?.session.options.allowWrites &&
+              snapshot?.pages.some((page) =>
+                page.inputs?.some((input) => input.type === 'password'),
+              ) && (
+                <div className="login-mode-notice" role="note">
+                  <ShieldCheck size={18} />
+                  <div>
+                    <strong>当前为只读模式，不会自动登录</strong>
+                    <p>
+                      现有任务只验证登录界面。允许交互后，可使用本会话提供的账号重新规划填写、提交及登录结果验证；图形验证码会提示手动输入。
+                    </p>
+                  </div>
+                  <button
+                    className="button-primary"
+                    disabled={busy || sending}
+                    onClick={() =>
+                      void send(
+                        '使用本会话之前提供的测试账号和密码完成登录；如果尚未提供账号，请明确说明缺少登录信息，不要编造。遇到图形验证码暂停并提示我输入，再验证登录成功。请将登录操作和登录后的断言放在同一个任务。',
+                        false,
+                        { ...options, allowWrites: true },
+                      )
+                    }
+                  >
+                    允许交互并规划登录
+                  </button>
+                </div>
+              )}
             <div className="metric-strip">
               <div>
                 <span>发现页面</span>

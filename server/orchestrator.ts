@@ -98,7 +98,17 @@ export class Orchestrator {
       if (plannerConfigured() && midsceneConfigured()) {
         this.store.event(id, '根据页面证据与对话目标规划视觉业务任务');
         try {
-          const visualTasks = await planWithModel(intent, session, pages, signal);
+          const previousUserMessages = this.store
+            .list('messages', id)
+            .filter((message) => message.role === 'user' && message.content !== intent)
+            .map((message) => message.content);
+          const visualTasks = await planWithModel(
+            intent,
+            session,
+            pages,
+            signal,
+            previousUserMessages,
+          );
           tasks = tasks.concat(visualTasks);
           planningNote = `模型规划新增 ${visualTasks.length} 项视觉业务任务。`;
         } catch (error) {
@@ -107,6 +117,12 @@ export class Orchestrator {
           planningNote = '模型业务规划未完成，当前保留 DOM 基础任务。详情见执行日志。';
         }
       }
+      if (
+        !session.options.allowWrites &&
+        pages.some((page) => page.inputs?.some((input) => input.type === 'password'))
+      )
+        planningNote +=
+          ' 当前为只读模式：不会填写账号密码或提交登录。需要自动登录时，请点击“允许交互并规划登录”，或在探索设置开启交互后重新发送登录目标。';
       const existing = this.store.list('tasks', id);
       selected = tasks.map((task) => {
         const previous = existing.find(

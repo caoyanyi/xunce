@@ -98,6 +98,26 @@ textarea::placeholder {
   background: var(--accent-soft);
   min-width: 0;
 }
+.login-mode-notice {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px;
+  margin: 16px 0;
+  background: var(--accent-soft);
+  border: 1px solid #b8d9cf;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.login-mode-notice > div {
+  flex: 1;
+  min-width: 180px;
+}
+.login-mode-notice p {
+  margin-top: 5px;
+  font-size: 12px;
+}
 .manual-input-card .section-title strong {
   display: flex;
   align-items: center;

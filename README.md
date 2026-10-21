@@ -1,6 +1,8 @@
 # Xunce（巡测）
 
-通过对话发起测试，自动探索站点、发现任务并执行验证的Web 工具。
+[English](README.en.md) | **简体中文**
+
+通过对话发起测试，自动探索站点、发现任务并执行验证的 Web 工具。
 
 当前版本已打通：**输入目标 → 同源探索 → 自动生成测试任务 → 执行断言 → 查看截图/报告 → 失败复跑**。内置一个真实可访问的演示商城，其中故意保留了 HTTP 500 活动页，便于核验故障发现能力。
 
@@ -53,6 +55,7 @@ Compose 使用具名卷 `e2e-explorer_explorer-data` 持久保存 `/app/data`，
 从原来的本机 `./data` 首次迁移时，先停止 `npm start`，再在空数据卷上执行：
 
 ```bash
+docker compose build
 docker compose create explorer
 docker compose run --rm --no-deps -v "$(pwd)/data:/source:ro" explorer \
   node -e "require('node:fs').cpSync('/source','/app/data',{recursive:true})"
@@ -221,10 +224,10 @@ curl http://127.0.0.1:4318/api/sessions \
   -d '{"targetUrl":"http://127.0.0.1:4318/demo","options":{"engine":"playwright","maxPages":6}}'
 ```
 
-拿到返回的 `id` 后发起测试：
+将下文的 `SESSION_ID` 替换为返回的 `id` 后发起测试：
 
 ```bash
-curl http://127.0.0.1:4318/api/sessions/<id>/chat \
+curl http://127.0.0.1:4318/api/sessions/SESSION_ID/chat \
   -H 'Content-Type: application/json' \
   -d '{"message":"探索商城并自动测试"}'
 ```
@@ -236,14 +239,14 @@ curl http://127.0.0.1:4318/api/sessions/<id>/chat \
 ```bash
 npm run typecheck
 npm run lint
-npm test
-npm run test:e2e
+PLANNER_API_KEY='' MIDSCENE_MODEL_API_KEY='' npm test
+PLANNER_API_KEY='' MIDSCENE_MODEL_API_KEY='' npm run test:e2e
 npm audit
 ```
 
 单元和集成测试覆盖执行边界、模型输出校验、SQLite 重启恢复、真实浏览器探索、表单断言、HTTP 故障、官方 TesterArmy runner、API 完整链路、并发锁、取消与复跑。UI E2E 覆盖从对话到任务结果、故障证据、复跑历史和移动端布局，并生成 `docs/screenshots/` 截图。
 
-`npm run test:e2e` 会自动构建并启动独立的本地测试服务。测试只访问内置演示站点及本地模拟供应商，不调用用户模型。`npm run format` 格式化源码。当前 63 项单元/集成测试通过；另有 3 项界面 E2E 覆盖主流程。首版服务端及共享逻辑行覆盖率记录为 89.74%。详见 [验证记录](docs/verification.md)。
+`npm run test:e2e` 会自动构建并启动独立的本地测试服务。以上指令显式禁用已配置的模型，即使 `.env` 含有真实模型凭据，测试也仅使用内置演示站点及本地模拟供应商，不调用付费模型。`npm run format` 格式化源码。当前 63 项单元/集成测试通过；另有 3 项界面 E2E 覆盖主流程。首版服务端及共享逻辑行覆盖率记录为 89.74%。详见 [验证记录](docs/verification.md)。
 
 ## 当前边界与后续规划
 

@@ -207,9 +207,13 @@ Model features send page observations or screenshots to your configured provider
 
 Use `assertUrl` to check the browser address and a separate visual assertion for page content. Visual assertions also receive the actual browser URL as context. Playwright/Midscene runs save `actualUrl`, displayed as **Actual URL** (`实际 URL`) in task details.
 
-When Xunce detects an empty, visible image-code field in an invalid state after an interaction, a failed assertion includes `failureCode: "captcha_required"` and an explanation of the unmet prerequisite. The original error, screenshot, and trace are preserved. A test that expects required-code validation can still pass; unsuccessful login is never converted into a pass.
+Xunce supports **human CAPTCHA input followed by test continuation**. Enable writable interaction and use Playwright or Midscene. When an action or outcome assertion is blocked by an image CAPTCHA and Xunce can identify a unique CAPTCHA input and login button, the run enters `waiting_input`. The workspace and task details show a screenshot and input card. Enter the code and click **Submit and continue** (`提交并继续`); Xunce fills the live input, submits the current login form, and checks the original URL/page assertions.
 
-Automated successful-login tests need explicit application-owned test configuration, such as a fixed test verification value or a test-only login entry point. Supply the authorized conditions in the test goal. Xunce does not solve or guess CAPTCHAs, and rerunning does not provide the missing prerequisite. Each task uses an isolated browser context; logging in manually in your own browser does not authenticate the worker.
+The same browser context, cookies, and entered login details stay alive during the wait. Reloading the console restores the pending request. Each request expires after **5 minutes**; human waiting does not consume the 120-second execution budget. If the expected outcome remains unmet, Xunce allows up to **3 human submissions**, each with a new screenshot and request ID. Cancellation, timeout, or server restart ends the wait. Stale and duplicate submissions are rejected. The website may expire its CAPTCHA earlier; stop and rerun the task in that case.
+
+Responses use a dedicated endpoint and are not written to chat, SQLite, or event logs. Tracing stops before the first human response to avoid recording its fill operation. Subsequent Midscene screenshots/reports may still contain sensitive page data; manage these artifacts as test data. Input fields are masked in the challenge screenshot.
+
+Xunce does not recognize or guess CAPTCHAs. If the application supplies an authorized fixed test value or test-only login entry point, provide it explicitly in the test conditions and use ordinary test steps. Logging in through your own browser does not authenticate the worker. Human continuation currently supports common image-code login forms in the main page; TesterArmy subprocesses, iframe/third-party challenges, sliders, and SMS codes are unsupported. If a resumable form cannot be identified, the run retains its failure evidence and CAPTCHA prerequisite diagnosis (`captcha_required`). Tests that expect required-code validation can still pass; successful login must satisfy the original outcome assertions.
 
 ## Data and API
 
@@ -226,17 +230,18 @@ data/
 
 Use `DATA_DIR` to customize native storage. Docker uses `/app/data` in its persistent volume. Duplicate execution requests are rejected while a job is active. Cancellation and shutdown clean up browsers and child processes while retaining completed results. Direct Playwright/Midscene tasks have a **120-second** budget; TesterArmy subprocesses have a **60-second** budget.
 
-| Method     | Endpoint                   | Purpose                                             |
-| ---------- | -------------------------- | --------------------------------------------------- |
-| GET        | `/api/health`              | Service health.                                     |
-| GET        | `/api/config`              | Model-configuration booleans and demo URL; no keys. |
-| GET / POST | `/api/sessions`            | List or create sessions.                            |
-| GET        | `/api/sessions/:id`        | Full session snapshot.                              |
-| POST       | `/api/sessions/:id/chat`   | Conversation commands and exploration options.      |
-| POST       | `/api/sessions/:id/tasks`  | Create a validated structured task.                 |
-| POST       | `/api/sessions/:id/run`    | Run all, selected, or failed tasks.                 |
-| POST       | `/api/sessions/:id/cancel` | Stop the current operation.                         |
-| GET        | `/api/sessions/:id/report` | Download a JSON report with tasks and history.      |
+| Method     | Endpoint                              | Purpose                                                               |
+| ---------- | ------------------------------------- | --------------------------------------------------------------------- |
+| GET        | `/api/health`                         | Service health.                                                       |
+| GET        | `/api/config`                         | Model-configuration booleans and demo URL; no keys.                   |
+| GET / POST | `/api/sessions`                       | List or create sessions.                                              |
+| GET        | `/api/sessions/:id`                   | Full session snapshot.                                                |
+| POST       | `/api/sessions/:id/chat`              | Conversation commands and exploration options.                        |
+| POST       | `/api/sessions/:id/tasks`             | Create a validated structured task.                                   |
+| POST       | `/api/sessions/:id/run`               | Run all, selected, or failed tasks.                                   |
+| POST       | `/api/sessions/:id/cancel`            | Stop the current operation.                                           |
+| POST       | `/api/sessions/:id/runs/:runId/input` | Submit a human CAPTCHA response: `{ requestId, value }`; returns 202. |
+| GET        | `/api/sessions/:id/report`            | Download a JSON report with tasks and history.                        |
 
 Create a session using Playwright:
 
@@ -266,7 +271,7 @@ PLANNER_API_KEY='' MIDSCENE_MODEL_API_KEY='' npm run test:e2e
 npm audit
 ```
 
-The test suite covers execution boundaries, planner-output validation, SQLite restart recovery, real browser discovery, form assertions, HTTP failures, the official TesterArmy runner, the full API workflow, concurrency, cancellation, and rerun history. UI E2E tests exercise the conversation-to-results flow, failure evidence, reruns, persistence, and mobile layout, producing screenshots in `docs/screenshots/`.
+The test suite covers execution boundaries, planner-output validation, SQLite restart recovery, real browser discovery, form assertions, HTTP failures, the official TesterArmy runner, the full API workflow, concurrency, cancellation, and rerun history. Tests also cover human CAPTCHA continuation, wrong responses, cancellation, expiry, restart cleanup, and the paused execution budget. UI E2E tests exercise the conversation-to-results flow, CAPTCHA input across a console reload, failure evidence, reruns, persistence, and mobile layout, producing screenshots in `docs/screenshots/`.
 
 `npm run test:e2e` builds the app and starts an isolated test service. The commands above explicitly disable configured models so tests use the built-in store and local mock providers without calling your paid providers, even if `.env` contains model credentials. `npm run format` formats the source. The latest recorded verification has **78 passing unit/integration tests** and **3 passing UI E2E tests**. The initial backend/shared-code line-coverage record was **89.74%**. Details are in the [verification record (Chinese)](docs/verification.md).
 

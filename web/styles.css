@@ -90,6 +90,62 @@ textarea::placeholder {
 .text-accent {
   color: var(--accent);
 }
+.manual-input-card {
+  margin: 18px 0;
+  padding: 20px;
+  border: 1px solid #b8d9cf;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  min-width: 0;
+}
+.manual-input-card .section-title strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.manual-input-card p {
+  margin-top: 10px;
+  font-size: 12px;
+}
+.captcha-screenshot {
+  display: block;
+  max-width: 560px;
+  margin: 14px 0;
+}
+.captcha-screenshot img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.manual-input-card form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.manual-input-card label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  max-width: 100%;
+}
+.manual-input-card input {
+  width: 180px;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid #b8d9cf;
+  border-radius: 6px;
+  background: white;
+}
+.manual-input-card form button {
+  min-height: 40px;
+}
+.status-label.waiting_input,
+.run-result.waiting_input {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 .sr-only {
   position: absolute;
   width: 1px;

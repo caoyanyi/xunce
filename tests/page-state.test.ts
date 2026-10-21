@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { browserLaunchOptions } from '../server/browser.ts';
-import { assertionContext, readPageState } from '../server/page-state.ts';
+import { assertionContext, captchaControls, readPageState } from '../server/page-state.ts';
 
 let browser: Browser;
 let page: Page;
@@ -19,6 +19,30 @@ afterAll(async () => {
 });
 
 describe('browser-supplied assertion evidence', () => {
+  it.each([
+    ['<form><input name="captcha"><button>Checkout</button></form>', false],
+    ['<form><input name="captcha"><input name="captcha2"><button>Log in</button></form>', false],
+    ['<form><input name="captcha" disabled><button>Log in</button></form>', false],
+    ['<div><input name="captcha"><button>Log in</button></div>', true],
+    [
+      '<div><input type="password"><input placeholder="Enter image code"><div style="cursor:pointer"><span>Log in</span></div></div>',
+      true,
+    ],
+    ['<div><input name="captcha"><h1>Log in</h1></div>', false],
+    [
+      '<form><input type="password"><input name="captcha" value="wrong"><button type="submit">Continue</button></form>',
+      true,
+    ],
+  ])(
+    'requires one visible challenge and an identifiable login control: %s',
+    async (html, expected) => {
+      await page.setContent(html);
+      const controls = await captchaControls(page);
+      expect(Boolean(controls)).toBe(expected);
+      await controls?.input.dispose();
+      await controls?.submit.dispose();
+    },
+  );
   it.each([
     ['<input placeholder="Enter image code" aria-invalid="true">', true],
     ['<input aria-label="图形验证码" aria-invalid="true">', true],

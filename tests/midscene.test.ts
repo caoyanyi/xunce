@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import type { Page } from 'playwright';
 import { executeTask } from '../server/executors.ts';
 import { testApp, session, task } from './helpers.ts';
+import { startCaptchaFixture } from './captcha-fixture.ts';
+
+const actions = vi.hoisted(() => ({ manual: 0 }));
 
 // Exercise the real browser/report lifecycle while replacing only the paid visual-model boundary.
 vi.mock('@midscene/web/playwright', () => ({
@@ -13,6 +16,12 @@ vi.mock('@midscene/web/playwright', () => ({
     async aiAct(_instruction: string, options: { abortSignal: AbortSignal }) {
       options.abortSignal.throwIfAborted();
       await this.page.getByLabel('邮箱').fill('qa@example.test');
+      if (_instruction === 'login-with-human-code') {
+        actions.manual++;
+        await this.page.getByLabel('密码', { exact: true }).fill('fixture-password');
+        await this.page.getByRole('button', { name: 'Log in' }).click();
+        throw new Error('Login requires human CAPTCHA input');
+      }
       if (_instruction === 'trigger-captcha') {
         await this.page.evaluate(() => {
           const field = document.createElement('input');
@@ -29,6 +38,11 @@ vi.mock('@midscene/web/playwright', () => ({
       options: { abortSignal: AbortSignal; context?: string },
     ) {
       options.abortSignal.throwIfAborted();
+      if (instruction === 'login-succeeded') {
+        await this.page.getByRole('heading', { name: '登录成功 · 首页' }).waitFor();
+        expect(options.context).not.toContain('Q7K9');
+        return;
+      }
       if (instruction === 'force-fail') throw new Error('视觉断言未满足');
       if (instruction === 'check-browser-url') {
         expect(options.context).toContain(this.page.url());
@@ -60,6 +74,41 @@ afterAll(async () => {
   if (env) await rm(env.dir, { recursive: true, force: true });
 });
 describe('Midscene SDK contract (model mocked)', () => {
+  it('hands a blocked visual action to a human without replaying the credential action', async () => {
+    const fixture = await startCaptchaFixture();
+    try {
+      const url = `${fixture.base}/login`;
+      const s = session(url);
+      s.options.allowWrites = true;
+      const evidence = await executeTask(
+        task(url, {
+          engine: 'midscene',
+          risk: 'write',
+          steps: [
+            { action: 'goto', url },
+            { action: 'aiAct', instruction: 'login-with-human-code' },
+            { action: 'assertUrl', url: `${fixture.base}/home` },
+            { action: 'aiAssert', instruction: 'login-succeeded' },
+          ],
+        }),
+        s,
+        'manual-visual',
+        `${env.dir}/artifacts/${s.id}/manual-visual`,
+        new AbortController().signal,
+        () => {},
+        async (challenge) => {
+          expect(challenge.attempt).toBe(1);
+          expect(challenge.actualUrl).toBe(url);
+          return 'Q7K9';
+        },
+      );
+      expect(actions.manual).toBe(1);
+      expect(evidence.actualUrl).toBe(`${fixture.base}/home`);
+      expect(evidence.failureCode).toBeUndefined();
+    } finally {
+      await fixture.close();
+    }
+  });
   it('supplies the actual browser URL to visual assertions and preserves it as evidence', async () => {
     const url = `${env.base}/demo/login`;
     const s = session(url);
@@ -124,6 +173,9 @@ describe('Midscene SDK contract (model mocked)', () => {
         `${env.dir}/artifacts/${s.id}/captcha-expected`,
         new AbortController().signal,
         () => {},
+        async () => {
+          throw new Error('验证验证码必填提示不应请求人工输入');
+        },
       ),
     ).resolves.toHaveProperty('screenshot');
   });

@@ -28,7 +28,7 @@ export const optionsSchema = z.object({
 });
 export type Options = z.infer<typeof optionsSchema>;
 export type SessionStatus =
-  'idle' | 'discovering' | 'running' | 'completed' | 'failed' | 'cancelled';
+  'idle' | 'discovering' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'cancelled';
 export interface Session {
   id: string;
   name: string;
@@ -71,15 +71,25 @@ export interface Task {
   engine: Engine;
   risk: 'read' | 'write';
   steps: Step[];
-  status: 'pending' | 'running' | 'passed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'waiting_input' | 'passed' | 'failed' | 'cancelled';
   createdAt: string;
 }
+export interface InputRequest {
+  id: string;
+  type: 'image_captcha';
+  screenshot: string;
+  actualUrl: string;
+  attempt: number;
+  expiresAt: string;
+}
+export type CaptchaChallenge = Pick<InputRequest, 'screenshot' | 'actualUrl' | 'attempt'>;
 export interface Run {
   id: string;
   sessionId: string;
   taskId: string;
   engine: Engine;
-  status: 'running' | 'passed' | 'failed' | 'cancelled';
+  status: 'running' | 'waiting_input' | 'passed' | 'failed' | 'cancelled';
+  pendingInput?: InputRequest;
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;

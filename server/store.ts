@@ -96,15 +96,16 @@ export class Store {
   }
   recoverInterrupted() {
     for (const run of this.list('runs'))
-      if (run.status === 'running')
+      if (['running', 'waiting_input'].includes(run.status))
         this.put('runs', {
           ...run,
           status: 'cancelled',
+          pendingInput: undefined,
           finishedAt: now(),
           error: '服务重启，执行已中断。可重新运行。',
         });
     for (const task of this.list('tasks'))
-      if (task.status === 'running') {
+      if (['running', 'waiting_input'].includes(task.status)) {
         const latest = this.list('runs', task.sessionId)
           .filter((run) => run.taskId === task.id)
           .at(-1);
@@ -117,7 +118,7 @@ export class Store {
         });
       }
     for (const session of this.list('sessions'))
-      if (['discovering', 'running'].includes(session.status)) {
+      if (['discovering', 'running', 'waiting_input'].includes(session.status)) {
         this.updateSession(session.id, { status: 'cancelled' });
         this.message(
           session.id,

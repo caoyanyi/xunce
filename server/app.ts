@@ -214,6 +214,21 @@ export async function createApp(
     sessionFor(req.params.id);
     return { cancelled: orchestrator.cancel(req.params.id) };
   });
+  app.post<{ Params: { id: string; runId: string } }>(
+    '/api/sessions/:id/runs/:runId/input',
+    async (req, reply) => {
+      const { id, runId } = z
+        .object({ id: z.string().uuid(), runId: z.string().uuid() })
+        .parse(req.params);
+      sessionFor(id);
+      const body = z
+        .object({ requestId: z.string().uuid(), value: z.string().trim().min(1).max(64) })
+        .strict()
+        .parse(req.body);
+      orchestrator.submitInput(id, runId, body.requestId, body.value);
+      return reply.code(202).send({ accepted: true });
+    },
+  );
   app.post<{ Params: { id: string } }>('/api/sessions/:id/tasks', async (req, reply) => {
     assertIdle();
     const session = sessionFor(req.params.id);

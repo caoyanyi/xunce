@@ -6,8 +6,10 @@ import { discover, tasksFromPages } from './discovery.ts';
 import { planWithModel, plannerConfigured, midsceneConfigured } from './planner.ts';
 import { errorMessage, throwIfAborted, UserError, validateTask } from './policy.ts';
 import { executeTask } from './executors.ts';
+import { ManualInputs } from './manual-input.ts';
 
 export class Orchestrator {
+  private inputs = new ManualInputs();
   private active?: { sessionId: string; controller: AbortController; promise: Promise<void> };
   constructor(
     private store: Store,
@@ -149,6 +151,33 @@ export class Orchestrator {
           join(this.artifactsDir, id, run.id),
           signal,
           (message) => this.store.event(id, message, 'info', run.id),
+          (challenge) =>
+            this.inputs.wait(id, run.id, challenge, signal, (pendingInput) => {
+              const status = pendingInput ? 'waiting_input' : 'running';
+              this.store.updateSession(id, { status });
+              this.store.put('tasks', { ...task, status });
+              this.store.put('runs', {
+                ...run,
+                status,
+                pendingInput,
+                actualUrl: challenge.actualUrl,
+              });
+              if (pendingInput) {
+                this.store.event(
+                  id,
+                  `等待手动输入图形验证码（第 ${challenge.attempt}/3 次，5 分钟内有效）`,
+                  'info',
+                  run.id,
+                );
+                this.store.message(
+                  id,
+                  'assistant',
+                  '任务已暂停并保留当前浏览器会话。请在验证码卡片查看截图、输入验证码并提交；提交后继续验证。也可停止任务。',
+                );
+              } else {
+                this.store.event(id, '验证码等待已结束', 'info', run.id);
+              }
+            }),
         );
         throwIfAborted(signal);
         this.store.put('runs', {
@@ -200,6 +229,11 @@ export class Orchestrator {
       return true;
     }
     return false;
+  }
+  submitInput(sessionId: string, runId: string, requestId: string, value: string) {
+    if (this.active?.sessionId !== sessionId || this.active.controller.signal.aborted)
+      throw new UserError('任务已停止或验证码请求已失效', 409);
+    this.inputs.submit(sessionId, runId, requestId, value);
   }
   async waitForIdle() {
     await this.active?.promise;

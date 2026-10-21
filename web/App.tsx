@@ -28,7 +28,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import type { ConfigStatus, Options, Session, Snapshot, Step, Task } from '../shared/types.ts';
+import type { ConfigStatus, Options, Run, Session, Snapshot, Step, Task } from '../shared/types.ts';
 import { allowedWhileBusy } from '../shared/commands.ts';
 
 async function api<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -50,6 +50,7 @@ const statusNames: Record<string, string> = {
   idle: '准备就绪',
   discovering: '正在探索',
   running: '正在执行',
+  waiting_input: '等待验证码',
   completed: '已完成',
   failed: '失败',
   cancelled: '已停止',
@@ -69,6 +70,7 @@ function StatusIcon({ status }: { status: string }) {
   if (status === 'running' || status === 'discovering')
     return <LoaderCircle size={17} className="spin text-accent" />;
   if (status === 'cancelled') return <Square size={15} className="text-muted" />;
+  if (status === 'waiting_input') return <MessageSquare size={17} className="text-accent" />;
   return <Circle size={16} className="text-muted" />;
 }
 function stepLabel(step: Step) {
@@ -133,7 +135,12 @@ export function App() {
   const activeRef = useRef(activeId);
   const chatEnd = useRef<HTMLDivElement>(null);
   activeRef.current = activeId;
-  const busy = snapshot?.session.status === 'discovering' || snapshot?.session.status === 'running';
+  const busy = Boolean(
+    snapshot && ['discovering', 'running', 'waiting_input'].includes(snapshot.session.status),
+  );
+  const waitingRun = snapshot?.runs.find(
+    (run) => run.status === 'waiting_input' && run.pendingInput,
+  );
   const refreshSessions = useCallback(async () => {
     setSessions(await api<Session[]>('/api/sessions'));
   }, []);
@@ -496,6 +503,14 @@ export function App() {
                 </button>
               </div>
             )}
+            {waitingRun && (
+              <ManualInputCard
+                key={waitingRun.pendingInput!.id}
+                run={waitingRun}
+                onRefresh={() => refresh(activeId)}
+                onCancel={stop}
+              />
+            )}
             <div className="metric-strip">
               <div>
                 <span>发现页面</span>
@@ -800,7 +815,9 @@ export function App() {
                   <span />
                   <span />
                   <span />
-                  正在{snapshot?.session.status === 'discovering' ? '观察站点' : '验证任务'}
+                  {snapshot?.session.status === 'waiting_input'
+                    ? '等待手动输入验证码'
+                    : `正在${snapshot?.session.status === 'discovering' ? '观察站点' : '验证任务'}`}
                 </div>
               )}
               <div ref={chatEnd} />
@@ -887,9 +904,107 @@ export function App() {
           busy={Boolean(busy || sending)}
           onClose={() => setTaskId('')}
           onRun={() => void run([selected.id])}
+          onRefresh={() => refresh(activeId)}
+          onCancel={stop}
         />
       )}
     </div>
+  );
+}
+
+function ManualInputCard({
+  run,
+  onRefresh,
+  onCancel,
+}: {
+  run: Run;
+  onRefresh: () => Promise<void>;
+  onCancel: () => Promise<void>;
+}) {
+  const request = run.pendingInput!;
+  const [value, setValue] = useState('');
+  const [state, setState] = useState<'ready' | 'sending' | 'submitted'>('ready');
+  const [error, setError] = useState('');
+  const [remaining, setRemaining] = useState(() =>
+    Math.max(0, Date.parse(request.expiresAt) - Date.now()),
+  );
+  useEffect(() => {
+    const timer = setInterval(
+      () => setRemaining(Math.max(0, Date.parse(request.expiresAt) - Date.now())),
+      1000,
+    );
+    return () => clearInterval(timer);
+  }, [request.expiresAt]);
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (state !== 'ready' || !value.trim() || !remaining) return;
+    setState('sending');
+    setError('');
+    try {
+      await api(`/api/sessions/${run.sessionId}/runs/${run.id}/input`, {
+        requestId: request.id,
+        value,
+      });
+      setValue('');
+      setState('submitted');
+    } catch (e) {
+      setState('ready');
+      setError((e as Error).message);
+    }
+    await onRefresh().catch(() => {});
+  }
+  return (
+    <section className="manual-input-card" aria-label="手动输入验证码">
+      <div className="section-title">
+        <strong>
+          <MessageSquare size={16} /> 需要你完成验证码
+        </strong>
+        <span>第 {request.attempt}/3 次</span>
+      </div>
+      <p>当前登录会话已保留。查看截图中的图形验证码，输入后将提交当前登录表单并继续验证。</p>
+      <a className="captcha-screenshot" href={request.screenshot} target="_blank" rel="noreferrer">
+        <img src={request.screenshot} alt="当前验证码页面截图，点击可放大" />
+      </a>
+      <form onSubmit={(e) => void submit(e)}>
+        <label>
+          图形验证码
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={64}
+            required
+            disabled={state !== 'ready' || !remaining}
+          />
+        </label>
+        <button
+          className="button-primary"
+          type="submit"
+          disabled={state !== 'ready' || !value.trim() || !remaining}
+        >
+          {state === 'ready'
+            ? '提交并继续'
+            : state === 'sending'
+              ? '提交中…'
+              : '已提交，继续验证中'}
+        </button>
+        <button type="button" onClick={() => void onCancel()} disabled={state === 'sending'}>
+          停止任务
+        </button>
+      </form>
+      <p role="status">
+        {remaining
+          ? `等待输入剩余 ${Math.ceil(remaining / 1000)} 秒；页面验证码可能提前过期。`
+          : '等待已超时，请重新运行任务。'}
+        {request.attempt > 1 ? ' 上次提交后预期仍未满足，请检查截图中的提示并重新输入。' : ''}
+      </p>
+      {error && (
+        <p role="alert" className="text-red">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -899,12 +1014,16 @@ function TaskDetail({
   busy,
   onClose,
   onRun,
+  onRefresh,
+  onCancel,
 }: {
   task: Task;
   snapshot: Snapshot;
   busy: boolean;
   onClose: () => void;
   onRun: () => void;
+  onRefresh: () => Promise<void>;
+  onCancel: () => Promise<void>;
 }) {
   const runs = snapshot.runs.filter((run) => run.taskId === task.id).reverse();
   const [runId, setRunId] = useState('');
@@ -937,7 +1056,9 @@ function TaskDetail({
         onKeyDown={(e) => {
           if (e.key !== 'Tab') return;
           const elements = Array.from(
-            e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],select'),
+            e.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not(:disabled),a[href],select,input:not(:disabled)',
+            ),
           );
           const first = elements[0];
           const last = elements.at(-1);
@@ -1010,6 +1131,14 @@ function TaskDetail({
           </div>
           {latest ? (
             <>
+              {latest.pendingInput && latest.status === 'waiting_input' && (
+                <ManualInputCard
+                  key={latest.pendingInput.id}
+                  run={latest}
+                  onRefresh={onRefresh}
+                  onCancel={onCancel}
+                />
+              )}
               <div className={`run-result ${latest.status}`}>
                 <StatusIcon status={latest.status} />
                 <strong>{statusNames[latest.status]}</strong>

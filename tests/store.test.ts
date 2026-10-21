@@ -6,6 +6,45 @@ import { Store } from '../server/store.ts';
 import { task } from './helpers.ts';
 import { now } from '../shared/types.ts';
 describe('SQLite persistence', () => {
+  it('invalidates waiting CAPTCHA requests after restart', () => {
+    const store = new Store(':memory:');
+    try {
+      const session = store.createSession('https://example.test/login');
+      store.updateSession(session.id, { status: 'waiting_input' });
+      store.put(
+        'tasks',
+        task(session.targetUrl, {
+          id: 'waiting-task',
+          sessionId: session.id,
+          status: 'waiting_input',
+        }),
+      );
+      store.put('runs', {
+        id: 'waiting-run',
+        sessionId: session.id,
+        taskId: 'waiting-task',
+        engine: 'playwright',
+        status: 'waiting_input',
+        startedAt: now(),
+        pendingInput: {
+          id: 'old-request',
+          type: 'image_captcha',
+          screenshot: '/artifacts/fixture.png',
+          actualUrl: session.targetUrl,
+          attempt: 1,
+          expiresAt: new Date(Date.now() + 300000).toISOString(),
+        },
+      });
+      store.recoverInterrupted();
+      const snapshot = store.snapshot(session.id)!;
+      expect(snapshot.session.status).toBe('cancelled');
+      expect(snapshot.tasks[0].status).toBe('cancelled');
+      expect(snapshot.runs[0].status).toBe('cancelled');
+      expect(snapshot.runs[0].pendingInput).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
   it('persists complete history and recovers interrupted operations after reopening', () => {
     const dir = mkdtempSync(join(tmpdir(), 'explorer-store-'));
     const path = join(dir, 'db.sqlite');

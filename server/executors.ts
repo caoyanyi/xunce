@@ -8,6 +8,7 @@ import { runTesterArmy } from './tester-army.ts';
 import { assertionContext, captchaControls, readPageState } from './page-state.ts';
 import { ExecutionBudget } from './manual-input.ts';
 import { PageReadiness } from './page-readiness.ts';
+import { followLink } from './navigation.ts';
 
 type Evidence = Pick<
   Run,
@@ -42,9 +43,24 @@ export async function executeTask(
       executionSignal,
       async (context) => {
         await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-        const page = await context.newPage();
-        const readiness = new PageReadiness(page, session.targetUrl);
+        let page = await context.newPage();
+        let readiness = new PageReadiness(page, session.targetUrl);
         let agent: import('@midscene/web/playwright').PlaywrightAgent | undefined;
+        let createAgent: (() => import('@midscene/web/playwright').PlaywrightAgent) | undefined;
+        const saveAgentReport = async () => {
+          const completed = agent;
+          agent = undefined;
+          if (!completed) return;
+          try {
+            await completed.destroy();
+            if (completed.reportFile) {
+              await copyFile(completed.reportFile, join(folder, basename(completed.reportFile)));
+              evidence.report = `${prefix}/${basename(completed.reportFile)}`;
+            }
+          } catch {
+            /* preserve the original execution outcome */
+          }
+        };
         let failure: unknown;
         let interactionAttempted = false;
         let manualAttempts = 0;
@@ -59,16 +75,19 @@ export async function executeTask(
             setMidsceneRunDir(join(folder, 'midscene'));
             resetMidsceneRunDir = () => setMidsceneRunDir(undefined);
             const { PlaywrightAgent } = await import('@midscene/web/playwright');
-            agent = new PlaywrightAgent(page, {
-              autoPrintReportMsg: false,
-              generateReport: true,
-              outputFormat: 'single-html',
-              reportFileName: `run-${runId}`,
-              replanningCycleLimit: 8,
-              aiContexts: {
-                default: guidance,
-              },
-            });
+            let agentNumber = 0;
+            createAgent = () =>
+              new PlaywrightAgent(page, {
+                autoPrintReportMsg: false,
+                generateReport: true,
+                outputFormat: 'single-html',
+                reportFileName: `run-${runId}-page-${++agentNumber}`,
+                replanningCycleLimit: 8,
+                aiContexts: {
+                  default: guidance,
+                },
+              });
+            agent = createAgent();
           }
           const runStep = async (step: Step) => {
             switch (step.action) {
@@ -110,27 +129,17 @@ export async function executeTask(
                 break;
               }
               case 'navigateLink': {
-                const index = await page
-                  .locator('a[href]')
-                  .evaluateAll(
-                    (links, url) =>
-                      links.findIndex((a) => (a as HTMLAnchorElement).href.split('#')[0] === url),
-                    step.url,
-                  );
-                if (index < 0) throw new Error('导航链接不存在');
-                const responsePromise = page
-                  .waitForResponse(
-                    (response) =>
-                      response.url().split('#')[0] === step.url &&
-                      response.request().isNavigationRequest(),
-                    { timeout: 5000 },
-                  )
-                  .catch(() => undefined);
-                await page.locator('a[href]').nth(index).click();
-                await page.waitForURL(step.url, { waitUntil: 'domcontentloaded' });
-                const response = await responsePromise;
-                if (response && response.status() >= 400)
-                  throw new Error(`HTTP ${response.status()}：${step.url}`);
+                const next = await followLink(page, step.url);
+                if (next.page !== page) {
+                  await saveAgentReport();
+                  readiness.close();
+                  page = next.page;
+                  readiness = new PageReadiness(page, session.targetUrl);
+                  agent = createAgent?.();
+                }
+                if (next.status && next.status >= 400)
+                  throw new Error(`HTTP ${next.status}：${step.url}`);
+                await readiness.wait(executionSignal);
                 break;
               }
               case 'validateForm': {
@@ -307,17 +316,7 @@ export async function executeTask(
               /* trace could be unavailable after a crash */
             }
           }
-          if (agent) {
-            try {
-              await agent.destroy();
-              if (agent.reportFile) {
-                await copyFile(agent.reportFile, join(folder, basename(agent.reportFile)));
-                evidence.report = `${prefix}/${basename(agent.reportFile)}`;
-              }
-            } catch {
-              /* preserve the original execution outcome */
-            }
-          }
+          await saveAgentReport();
           if (failure && humanResponses.length) {
             let message = errorMessage(failure);
             for (const value of humanResponses)

@@ -38,6 +38,11 @@ vi.mock('@midscene/web/playwright', () => ({
       options: { abortSignal: AbortSignal; context?: string },
     ) {
       options.abortSignal.throwIfAborted();
+      if (instruction === 'check-popup-document') {
+        expect(await this.page.title()).toBe('Popup terms');
+        expect(options.context).toContain(this.page.url());
+        return;
+      }
       if (instruction === 'login-succeeded') {
         await this.page.getByRole('heading', { name: '登录成功 · 首页' }).waitFor();
         expect(options.context).not.toContain('Q7K9');
@@ -74,6 +79,45 @@ afterAll(async () => {
   if (env) await rm(env.dir, { recursive: true, force: true });
 });
 describe('Midscene SDK contract (model mocked)', () => {
+  it('binds subsequent visual assertions to a navigated popup instead of the source tab', async () => {
+    const { createServer } = await import('node:http');
+    const server = createServer((req, res) => {
+      res.setHeader('content-type', 'text/html');
+      res.end(
+        req.url === '/destination'
+          ? '<title>Popup terms</title><h1>Terms content</h1>'
+          : '<title>Popup source</title><a href="/destination" target="_blank">Terms</a>',
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/source`;
+    const destination = new URL('/destination', url).href;
+    const s = session(url);
+    try {
+      const evidence = await executeTask(
+        task(url, {
+          engine: 'midscene',
+          steps: [
+            { action: 'goto', url },
+            { action: 'aiAssert', instruction: 'check-browser-url' },
+            { action: 'navigateLink', url: destination },
+            { action: 'aiAssert', instruction: 'check-popup-document' },
+          ],
+        }),
+        s,
+        'visual-popup',
+        `${env.dir}/artifacts/${s.id}/visual-popup`,
+        new AbortController().signal,
+        () => {},
+      );
+      expect(evidence.actualUrl).toBe(destination);
+      expect(evidence.report).toBeTruthy();
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
   it('hands a blocked visual action to a human without replaying the credential action', async () => {
     const fixture = await startCaptchaFixture();
     try {

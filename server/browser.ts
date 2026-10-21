@@ -40,16 +40,29 @@ export async function withBrowser<T>(
     context.setDefaultTimeout(12000);
     context.setDefaultNavigationTimeout(20000);
     await context.route('**/*', async (route) => {
-      const req = route.request();
-      if (
-        req.isNavigationRequest() &&
-        req.frame().parentFrame() === null &&
-        (!inScope(req.url(), target) || (!allowWrites && !isSafeNavigation(req.url())))
-      )
-        return route.abort('blockedbyclient');
-      if (!allowWrites && !['GET', 'HEAD', 'OPTIONS'].includes(req.method()))
-        return route.abort('blockedbyclient');
-      return route.continue();
+      try {
+        const req = route.request();
+        let topLevelNavigation = req.isNavigationRequest();
+        if (topLevelNavigation) {
+          try {
+            topLevelNavigation = req.frame().parentFrame() === null;
+          } catch {
+            /* A popup's initial request can precede frame creation. Treat it as top-level. */
+          }
+        }
+        if (
+          topLevelNavigation &&
+          (!inScope(req.url(), target) || (!allowWrites && !isSafeNavigation(req.url())))
+        )
+          return await route.abort('blockedbyclient');
+        if (!allowWrites && !['GET', 'HEAD', 'OPTIONS'].includes(req.method()))
+          return await route.abort('blockedbyclient');
+        await route.continue();
+      } catch {
+        // Routing is an event callback: never let a closing page reject into the Node process.
+        // Unexpected routing errors fail closed and become a navigation failure for this task.
+        await route.abort('failed').catch(() => {});
+      }
     });
     return await action(context);
   } finally {

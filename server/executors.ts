@@ -8,7 +8,7 @@ import { runTesterArmy } from './tester-army.ts';
 import { assertionContext, captchaControls, readPageState } from './page-state.ts';
 import { ExecutionBudget } from './manual-input.ts';
 import { PageReadiness } from './page-readiness.ts';
-import { followLink } from './navigation.ts';
+import { followLink, LinkNavigationError } from './navigation.ts';
 import { assertBrowserState, BrowserAssertionError } from './assertions.ts';
 
 type Evidence = Pick<
@@ -125,16 +125,24 @@ export async function executeTask(
                 await assertBrowserState(page, step, executionSignal);
                 break;
               case 'navigateLink': {
-                const next = await followLink(page, step.url);
-                if (next.page !== page) {
+                const adoptPage = async (next: typeof page) => {
+                  if (next === page) return;
                   await saveAgentReport();
                   readiness.close();
-                  page = next.page;
+                  page = next;
                   readiness = new PageReadiness(page, session.targetUrl);
                   agent = createAgent?.();
+                };
+                let next;
+                try {
+                  next = await followLink(page, step.url);
+                } catch (error) {
+                  if (error instanceof LinkNavigationError) await adoptPage(error.page);
+                  throw error;
                 }
+                await adoptPage(next.page);
                 if (next.status && next.status >= 400)
-                  throw new Error(`HTTP ${next.status}：${step.url}`);
+                  throw new Error(`HTTP ${next.status}：${page.url()}`);
                 await readiness.wait(executionSignal);
                 break;
               }
@@ -304,11 +312,24 @@ export async function executeTask(
           }
           if (!signal.aborted) {
             try {
-              await page.screenshot({
-                path: join(folder, 'screenshot.png'),
-                fullPage: false,
-                ...(manualAttempts ? { mask: [page.locator('input')] } : {}),
-              });
+              if (failure instanceof LinkNavigationError && !manualAttempts) {
+                // A truncated document can leave document.fonts.ready pending forever.
+                // Capture the actual failed viewport without waiting for page readiness.
+                // Keep the masked Playwright path after human input to avoid exposing codes.
+                const capture = await context.newCDPSession(page);
+                try {
+                  const { data } = await capture.send('Page.captureScreenshot', { format: 'png' });
+                  await writeFile(join(folder, 'screenshot.png'), Buffer.from(data, 'base64'));
+                } finally {
+                  await capture.detach().catch(() => {});
+                }
+              } else {
+                await page.screenshot({
+                  path: join(folder, 'screenshot.png'),
+                  fullPage: false,
+                  ...(manualAttempts ? { mask: [page.locator('input')] } : {}),
+                });
+              }
               evidence.screenshot = `${prefix}/screenshot.png`;
             } catch {
               /* an inaccessible page may have no screenshot */

@@ -222,7 +222,23 @@ Login requires writable interaction. A read-only session checks the login interf
 
 After navigation, Xunce waits for visible application content to settle before taking model screenshots. Playwright/Midscene also wait for same-origin document, script, and stylesheet requests, with a 20-second limit. Persistently blank/loading pages produce `page_not_ready` with resource and script error counts. This gate checks rendering; successful login still requires outcome assertions. Discovery supplies both the entry `url` and redirected `actualUrl` to the planner for URL checks.
 
-Navigation tasks click real links and follow either the current tab or a newly opened tab. Subsequent assertions, screenshots, and the recorded actual URL use the destination page. The target-origin boundary also applies to new tabs.
+#### Link navigation and multi-hop redirects
+
+`navigateLink` finds a visible link by its exact full href and **clicks once**. It supports the current tab, new tabs, reused named windows, and same-document hash navigation. Valid same-origin HTTP redirect chains can continue; subsequent assertions, screenshots, and the actual URL follow the final destination page rather than requiring that address to equal the initial href.
+
+```mermaid
+flowchart LR
+  A[Visible link] --> B[Click once]
+  B --> C[Check origin and read-only policy per hop]
+  C -->|Allowed redirect| C
+  C -->|Out of scope or unsafe| D[Block before sending and retain evidence]
+  C -->|Final document| E[Check response and page readiness]
+  E --> F[Apply original strict assertions]
+```
+
+Each hop is checked before network transmission. Playwright/Midscene require same-origin main documents; read-only sessions also block write methods and unsafe GET destinations. Popup and worker requests follow the applicable restrictions. TesterArmy retains its same-origin restriction for all resources. Losing the interceptor closes the browser rather than continuing without protection. These controls are not an independent network sandbox.
+
+A final main-document HTTP 4xx/5xx, failed request, or truncated response body fails the task; an intermediate 302/307 is not a successful outcome. Failure evidence retains the actual destination URL, screenshot, and Trace where available. Redirect handling does not change the test expectation: an `assertUrl` still expecting the initial address fails strictly after a redirect to another address. Xunce **does not rewrite expectations, click again, or replay requests to obtain a pass**.
 
 Use `assertUrl` to check the browser address and a separate visual assertion for page content. Visual assertions receive the actual browser URL and paired visible-link text/href observations as context; they must not infer addresses from pixels. Playwright/Midscene runs save `actualUrl`, displayed as **Actual URL** (`实际 URL`) in task details.
 
@@ -315,7 +331,9 @@ npm audit
 
 The suite covers execution boundaries, planner-output validation, SQLite restart recovery, real browser discovery, form assertions, HTTP failures, the official TesterArmy runner, the API workflow, concurrency, cancellation, and rerun history. Assertion regressions cover late SPA navigation, query/hash significance, strict same-origin path matching, relative links, same-anchor text/href pairing, truncated evidence, and cancellation/closure/crashes. CAPTCHA tests cover human continuation, wrong responses, expiry, restart cleanup, and paused execution budgets. UI E2E covers the conversation-to-results flow, saved assertion options across reload, URL/link failure evidence, CAPTCHA input, reruns, and mobile layouts, producing screenshots in `docs/screenshots/`.
 
-`npm run test:e2e` builds the app and starts an isolated test service. The commands above explicitly disable configured models so tests use the built-in store and local mock providers without calling your paid providers, even if `.env` contains credentials. `npm run format` formats the source. The **2026-10-23 strict-assertion iteration** passed **228 unit/integration tests across 17 files**. After fixing browser-probe serialization, the **72 affected tests** and full **13 UI E2E tests** passed again. After correcting planner-capability messages, **59 targeted planner/usability tests** passed, including 2 new configuration-combination regressions. The current suite defines 230 tests; the full suite was not rerun. Final type checking, lint, changed-source formatting, and frontend/backend production builds passed. This Windows run used installed Chrome via `CHROMIUM_PATH`; Docker, dependency audit, coverage, and real paid-model behavior were not rechecked. See the [strict assertion verification record (Chinese)](docs/verification-v0.2.md#2026-10-23-严格-url-与链接断言验收). The earlier audit with 0 known vulnerabilities and initial 89.74% line coverage are historical results, not new measurements.
+`npm run test:e2e` builds the app and starts an isolated test service. The commands above explicitly disable configured models so tests use the built-in store and local mock providers without calling your paid providers, even if `.env` contains credentials. `npm run format` formats the source.
+
+The **2026-10-23 multi-hop navigation iteration** passed **244 unit/integration tests across 18 files**, including **14 redirect regressions** for multi-hop navigation, per-hop blocking, final-document errors, named windows, and workers. The full **13 UI E2E tests** passed. Type checking, lint, changed-source formatting, frontend/backend production builds, and compiled production `.js` smoke checks passed; the production smoke checks include the real TesterArmy subprocess and pre-transmission unsafe-hop blocking. This Windows run used Node 24.22.1 and installed Chrome via `CHROMIUM_PATH`. A broken local npm wrapper required a temporary UI configuration that directly launched the same `tsx` service; the committed configuration was not changed. Docker, dependency audit, coverage, real paid models, and deployment on another device were not rechecked. See the [multi-hop navigation verification record (Chinese)](docs/verification-v0.2.md#2026-10-23-多跳导航与逐跳安全验收). The [previous strict-assertion verification](docs/verification-v0.2.md#2026-10-23-严格-url-与链接断言验收), earlier audit with 0 known vulnerabilities, and initial 89.74% line coverage remain historical records, not new measurements.
 
 ## Current scope and roadmap
 

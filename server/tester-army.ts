@@ -4,7 +4,7 @@ import { join, relative, resolve, basename } from 'node:path';
 import type { RunResult } from 'e2e/runner';
 import type { Run, Session, Task } from '../shared/types.ts';
 import { resolveChromiumPath } from './browser.ts';
-import { throwIfAborted } from './policy.ts';
+import { throwIfAborted, isSafeNavigation } from './policy.ts';
 import { renderingFingerprint } from './page-readiness.ts';
 import { inspectLinks, matchesUrl } from './assertions.ts';
 
@@ -32,6 +32,7 @@ import { writeFile } from 'node:fs/promises';
 const steps = ${JSON.stringify(task.steps, null, 2)};
 const origin = ${JSON.stringify(new URL(session.targetUrl).origin)};
 const allowWrites = ${JSON.stringify(session.options.allowWrites)};
+const safeNavigation = ${isSafeNavigation.toString()};
 const renderingProbe = ${JSON.stringify(renderingFingerprint.toString())};
 const urlMatches = ${matchesUrl.toString()};
 const linkProbe = ${JSON.stringify(inspectLinks.toString())};
@@ -71,7 +72,7 @@ test(${JSON.stringify(task.title)}, async ({ app, browser, screen }) => {
   await browser.goto('about:blank');
   await browser.route('**/*', async route => {
     const request = route.request;
-    if (new URL(request.url).origin !== origin || (!allowWrites && !['GET', 'HEAD', 'OPTIONS'].includes(request.method))) return route.abort();
+    if (new URL(request.url).origin !== origin || (!allowWrites && (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) || !safeNavigation(request.url)))) return route.abort();
     return route.continue();
   });
   try {
@@ -146,21 +147,19 @@ export async function runTesterArmy(
     .replace("from 'e2e'", `from ${JSON.stringify(import.meta.resolve('e2e'))}`);
   await writeFile(join(folder, 'runtime.e2e.ts'), runtime);
   // The official runner executes the fixed test template in an isolated process. No shell is involved.
+  // Resolve the sibling at runtime in both tsx development and compiled production.
+  const sourceRuntime = import.meta.url.endsWith('.ts');
+  const guardModule = new URL(`./network-guard.${sourceRuntime ? 'ts' : 'js'}`, import.meta.url)
+    .href;
   const runner = `import { run } from ${JSON.stringify(import.meta.resolve('e2e/runner'))};
 import { web } from ${JSON.stringify(import.meta.resolve('@e2e-dev/web'))};
 import { writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
-import { chromium } from ${JSON.stringify(import.meta.resolve('playwright'))};
-let hostBrowser;
-let webOptions = {};
-if (process.env.CHROMIUM_PATH) {
-  const socket = createServer();
-  await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
-  const port = socket.address().port;
-  await new Promise(resolve => socket.close(resolve));
-  hostBrowser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH, headless: true, args: ['--disable-dev-shm-usage', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port] });
-  webOptions = { connect: { cdpEndpoint: () => 'http://127.0.0.1:' + port } };
-}
+import { launchGuardedChromium } from ${JSON.stringify(guardModule)};
+const guarded = await launchGuardedChromium({
+  ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
+  headless: true, args: ['--disable-dev-shm-usage'],
+}, ${JSON.stringify(session.targetUrl)}, ${JSON.stringify(session.options.allowWrites)}, true);
+const webOptions = { connect: { cdpEndpoint: () => guarded.endpoint } };
 const controller = new AbortController();
 process.on('SIGTERM', () => controller.abort());
 try {
@@ -171,26 +170,33 @@ const result = await run({ cwd: ${JSON.stringify(folder)}, config: {
 }, interruptSignal: controller.signal });
 await writeFile(${JSON.stringify(join(folder, 'runner-result.json'))}, JSON.stringify(result));
 process.exitCode = result.exitCode;
-} finally { await hostBrowser?.close(); }
+} finally { await guarded.close(); }
 `;
   await writeFile(join(folder, 'runner.mjs'), runner);
   emit('已生成结构化测试，启动 TesterArmy 官方 runner');
   const log: string[] = [];
   const exitCode = await new Promise<number | null>((done, reject) => {
-    const child = spawn(process.execPath, [join(folder, 'runner.mjs')], {
-      cwd: resolve('.'),
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        TMPDIR: process.env.TMPDIR,
-        PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH,
-        CHROMIUM_PATH: resolveChromiumPath(),
-        E2E_TELEMETRY_DISABLED: '1',
-        NO_COLOR: '1',
+    const child = spawn(
+      process.execPath,
+      [
+        ...(sourceRuntime ? ['--import', import.meta.resolve('tsx')] : []),
+        join(folder, 'runner.mjs'),
+      ],
+      {
+        cwd: resolve('.'),
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH,
+          CHROMIUM_PATH: resolveChromiumPath(),
+          E2E_TELEMETRY_DISABLED: '1',
+          NO_COLOR: '1',
+        },
       },
-    });
+    );
     const stop = (force = false) => {
       if (!child.pid) return;
       try {

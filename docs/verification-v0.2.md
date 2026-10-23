@@ -1,6 +1,6 @@
 # 0.2 功能升级验收
 
-初次验收日期：2026-10-21。范围：[功能升级计划](plans/2026-10-21-002-feat-usability-upgrade-plan.md)。下方交付、自动化和部署结果保留该日的历史记录；2026-10-23 的后续实测分为[验证码生命周期复验](#2026-10-23-验证码生命周期复验)和本轮[严格 URL 与链接断言验收](#2026-10-23-严格-url-与链接断言验收)，不将旧的 Docker 或部署结果作为本轮验证。
+初次验收日期：2026-10-21。范围：[功能升级计划](plans/2026-10-21-002-feat-usability-upgrade-plan.md)。下方交付、自动化和部署结果保留该日的历史记录；2026-10-23 的后续实测分别记录为[验证码生命周期复验](#2026-10-23-验证码生命周期复验)、[严格 URL 与链接断言验收](#2026-10-23-严格-url-与链接断言验收)和最新的[多跳导航与逐跳安全验收](#2026-10-23-多跳导航与逐跳安全验收)，不将旧的 Docker 或部署结果作为本轮验证。
 
 ## 交付功能
 
@@ -179,3 +179,77 @@ node.exe data/verify.cjs node_modules/playwright/cli.js test
 测试服务和数据目录独立，没有向正式数据卷添加记录。UI 生成的 7 张临时文档截图已恢复，不混入源码提交。原 npm 用户镜像配置及 `NO_COLOR` 警告未导致测试失败。`data/` 内的包装脚本和测试输出均被忽略，不属于交付文件。
 
 本节为提交前的验证记录。其他设备更新时保留原 `.env` 与数据卷，拉取后重新构建容器；不要执行 `docker compose down -v`。旧记录保留不等同于旧任务的错误预期被自动修复，更新后应按上述语义修订或重新规划对应任务。
+
+## 2026-10-23 多跳导航与逐跳安全验收
+
+本轮在严格断言的基础上升级 `navigateLink`：允许链接经过合法同源 HTTP 重定向到最终页面，而不是把“最终 URL 必须等于初始 href”作为导航成功条件。该变化不放宽后续 `assertUrl`，不改写任务预期，不自动重试点击或重发请求。
+
+### 实现与安全边界
+
+| 范围 | 本轮行为 |
+| --- | --- |
+| 单次真实点击 | 精确匹配可见链接的完整 href，只点击一次；支持当前页、新标签页、命名窗口复用和同文档 hash；来源页 hash 变化或无关 popup 不冒充目标 |
+| 重定向与状态 | 追踪本次点击对应的 HTTP 请求链及最终主文档响应；导航与响应体完成共享 12 秒期限；最终 HTTP 4xx/5xx、请求失败或响应体截断均失败 |
+| 逐跳拦截 | 使用独立浏览器级 CDP Fetch，在每跳网络发送前校验；不依赖 Playwright 只处理首跳的 route，不预取响应或改写 URL |
+| 同源与只读 | Playwright/Midscene 仅主文档要求同源，允许正常跨源子资源；只读模式对请求方法及危险 GET 地址执行限制；TesterArmy 所有资源维持同源限制 |
+| popup / worker | 递归自动附加并在恢复运行前建立保护；覆盖新窗口和 worker 请求；拦截器失联时关闭浏览器，收尾先关浏览器再断开拦截，避免释放暂停请求 |
+| 失败证据 | 成功和失败都接管实际目标页，保留可用的实际 URL、失败步骤、截图和 Trace；截断文档使用 CDP 截图避免字体就绪等待卡住；人工输入后仍使用输入框遮盖截图路径 |
+| TesterArmy | 真实官方 runner 子进程使用同一拦截器；开发 `.ts` 使用 tsx，生产编译 `.js` 使用对应模块，不依赖开发源码 |
+
+```mermaid
+sequenceDiagram
+    participant T as 执行器
+    participant B as 浏览器
+    participant G as 逐跳拦截器
+    participant S as 目标站点
+    T->>B: 点击已验证链接一次
+    loop 每一跳
+        B->>G: 待发送请求
+        alt 同源及只读规则允许
+            G->>S: 放行请求
+            S-->>B: 重定向或最终文档
+        else 不允许
+            G-->>B: 发送前阻断
+        end
+    end
+    B-->>T: 最终目标页及响应或失败
+    T->>B: 原预期严格断言 / 保存证据
+```
+
+无需数据库或 API schema 迁移。已有任务不自动改写；如果某个旧 `assertUrl` 错把初始链接地址作为最终地址，仍会失败，应根据实际需求编辑或重新规划。只读危险地址识别仍是既有启发式规则，同源和请求拦截不等同于独立网络沙箱，也不代表允许测试未授权站点。
+
+### 本轮实测结果
+
+| 检查 | 结果 |
+| --- | --- |
+| 全量单元/集成测试 | **244 / 244，18 个文件通过**；含真实浏览器、TesterArmy runner 和本地模型合同验证 |
+| 重定向专项 | **14 / 14 通过**，已包含在 244 项内，不重复相加；覆盖当前页/popup 多跳、严格 URL 不降级、逐跳危险 GET/跨源阻断、最终 503/截断响应、命名窗口、hash 干扰、dedicated/shared worker 和 TesterArmy 子进程 |
+| 完整 UI E2E | **13 / 13 通过**；沿用断言、验证码、任务编辑、队列与移动端回归 |
+| TypeScript / ESLint | `tsc --noEmit`、`eslint .` 通过 |
+| 前后端生产构建 | `tsc --noEmit`、`vite build`、`tsc -p tsconfig.server.json` 通过 |
+| 编译后生产运行 | `.js` 烟测通过：popup 多跳、完整最终 URL、单次请求计数、真实 TesterArmy 子进程模块加载、安全跳转与危险跳转发送前阻断 |
+| 格式与差异 | 本轮 7 个代码/测试文件格式检查通过；三份文档共 23 个本地链接/锚点校验通过；`git diff --check` 通过 |
+| 本轮未验收 | Docker、其他设备部署、依赖审计、覆盖率及真实付费模型；不将此前记录当作本轮通过 |
+
+UI 回归生成的 7 张文档截图不属于本轮功能变化，提交时恢复，避免无关图片混入。最终只读审查核对了逐跳边界、监听器与浏览器收尾、目标页接管以及开发/生产模块路径，未发现阻塞问题。专项未单独覆盖 TesterArmy service worker；Playwright/Midscene context 明确禁用 service worker，不据此宣称所有浏览器环境均已验收。
+
+### 环境、执行方式与部署提醒
+
+Windows 使用临时 **Node 24.22.1**，包装脚本设置子进程 `PATH`、`CHROMIUM_PATH` 和浏览器目录，并显式清空模型密钥。未修改 `.env`，测试使用本地 fixture、模拟模型和独立测试数据目录。沿用项目 Node >=24.8.0 要求与正式测试配置。
+
+本机 `npm` 包装入口失效，使正式 Playwright `webServer` 启动失败；首次临时配置又因相对工作目录解析到 `data/` 而找不到服务入口。修正后的临时配置继承正式配置，仅将启动命令改为 `node --import tsx server/index.ts`，并显式指定项目根目录 `cwd` 和 `testDir`。端口、串行执行、超时和独立 `DATA_DIR` 保持不变；随后全部 13 项 UI 用例通过。正式 `playwright.config.ts` 和包脚本未为本机故障改动，生产构建另行通过。
+
+本轮实际入口（前缀 `node.exe` 指临时 Node 24.22.1）：
+
+```text
+node.exe data/verify.cjs node_modules/vitest/vitest.mjs run
+node.exe data/verify.cjs node_modules/vitest/vitest.mjs run tests/redirect-navigation.test.ts
+node.exe data/verify.cjs node_modules/playwright/cli.js test --config=data/ui-verify.config.ts
+node.exe data/verify.cjs node_modules/typescript/bin/tsc --noEmit
+node.exe data/verify.cjs node_modules/eslint/bin/eslint.js .
+node.exe data/verify.cjs node_modules/vite/bin/vite.js build
+node.exe data/verify.cjs node_modules/typescript/bin/tsc -p tsconfig.server.json
+node.exe data/verify.cjs data/production-redirect-smoke.mjs
+```
+
+`data/` 内临时配置、运行时和烟测脚本均被 Git 忽略，不作为部署文件。在 Node 和 npm 正常的环境使用标准 `npm test`、`npm run test:e2e`、`npm run typecheck`、`npm run lint`、`npm run build` 复现。本轮没有其他设备部署结论；更新前先确认无活动作业，保留 `.env` 和原数据卷，再拉取、构建并检查健康状态，不执行 `docker compose down -v`。

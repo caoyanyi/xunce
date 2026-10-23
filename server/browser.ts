@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { chromium, type BrowserContext } from 'playwright';
 import { inScope, isSafeNavigation, throwIfAborted } from './policy.ts';
+import { launchGuardedChromium } from './network-guard.ts';
 export function resolveChromiumPath(): string | undefined {
   if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
   if (existsSync(chromium.executablePath())) return undefined;
@@ -23,7 +24,8 @@ export async function withBrowser<T>(
   action: (context: BrowserContext) => Promise<T>,
 ): Promise<T> {
   throwIfAborted(signal);
-  const browser = await chromium.launch(browserLaunchOptions());
+  const guarded = await launchGuardedChromium(browserLaunchOptions(), target, allowWrites);
+  const { browser } = guarded;
   let context: BrowserContext | undefined;
   const cancel = () => {
     void context?.close().catch(() => {});
@@ -50,12 +52,12 @@ export async function withBrowser<T>(
             /* A popup's initial request can precede frame creation. Treat it as top-level. */
           }
         }
-        if (
-          topLevelNavigation &&
-          (!inScope(req.url(), target) || (!allowWrites && !isSafeNavigation(req.url())))
-        )
+        if (topLevelNavigation && !inScope(req.url(), target))
           return await route.abort('blockedbyclient');
-        if (!allowWrites && !['GET', 'HEAD', 'OPTIONS'].includes(req.method()))
+        if (
+          !allowWrites &&
+          (!['GET', 'HEAD', 'OPTIONS'].includes(req.method()) || !isSafeNavigation(req.url()))
+        )
           return await route.abort('blockedbyclient');
         await route.continue();
       } catch {
@@ -68,6 +70,6 @@ export async function withBrowser<T>(
   } finally {
     signal.removeEventListener('abort', cancel);
     await context?.close().catch(() => {});
-    await browser.close().catch(() => {});
+    await guarded.close();
   }
 }

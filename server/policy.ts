@@ -9,8 +9,6 @@ export class UserError extends Error {
     super(message);
   }
 }
-const dangerousPath =
-  /(?:^|[\W_])(logout|signout|delete|destroy|remove|unsubscribe|purchase|checkout|pay|登出|退出|删除|支付|购买)(?:[\W_]|$)/i;
 export function targetUrl(input: string): string {
   let url: URL;
   try {
@@ -34,6 +32,9 @@ export function inScope(input: string, origin: string): boolean {
   }
 }
 export function isSafeNavigation(input: string): boolean {
+  // Keep this probe self-contained: TesterArmy embeds the same policy function.
+  const dangerousPath =
+    /(?:^|[\W_])(logout|signout|delete|destroy|remove|unsubscribe|purchase|checkout|pay|登出|退出|删除|支付|购买)(?:[\W_]|$)/i;
   try {
     const url = new URL(input);
     return !dangerousPath.test(decodeURIComponent(url.pathname + url.search));

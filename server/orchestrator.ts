@@ -194,7 +194,8 @@ export class Orchestrator {
         throw new UserError('未能访问任何页面，请检查目标地址、网络或浏览器安装');
       this.updateJob(job.id, { status: 'planning' });
       let tasks = tasksFromPages(session, pages);
-      let note = '使用基于真实 DOM 的规则发现；配置规划模型与 Midscene 后可增加视觉业务流程。';
+      let note =
+        '使用基于真实 DOM 的规则发现；配置规划模型后可增加结构化业务任务，视觉业务流程还需配置 Midscene。';
       let replaceSources: Task['source'][] = ['dom', 'model'];
       if (
         session.options.allowWrites &&
@@ -202,11 +203,12 @@ export class Orchestrator {
         (!plannerConfigured() || !midsceneConfigured())
       )
         this.updateJob(job.id, {
-          warning:
-            '尚未配置完整的规划模型和 Midscene，本次仅检查基础页面，不会自动填写登录。可以在任务编辑器创建 Playwright 登录任务。',
+          warning: !plannerConfigured()
+            ? '尚未配置规划模型，本次仅使用 DOM 规则发现，不会自动填写登录。可以在任务编辑器创建 Playwright 登录任务。'
+            : 'Midscene 尚未配置：可规划并执行结构化 Playwright 任务，但视觉操作与断言不可运行。自动填写登录需要配置 Midscene，或手动创建 Playwright 登录任务。',
         });
-      if (plannerConfigured() && midsceneConfigured()) {
-        emit('根据页面证据与会话目标规划视觉业务任务');
+      if (plannerConfigured()) {
+        emit('根据页面证据与会话目标规划结构化及视觉业务任务');
         try {
           const messages = this.store
             .list('messages', id)
@@ -219,21 +221,21 @@ export class Orchestrator {
                 ),
             )
             .map((message) => message.content);
-          const visual = await planWithModel(
+          const planned = await planWithModel(
             intent || session.goal || '',
             session,
             pages,
             signal,
             messages,
           );
-          tasks = tasks.concat(visual);
-          note = `模型规划新增 ${visual.length} 项视觉业务任务。`;
+          tasks = tasks.concat(planned);
+          note = `模型规划新增 ${planned.length} 项结构化或视觉业务任务。`;
         } catch (error) {
           throwIfAborted(signal);
           replaceSources = ['dom'];
           emit(`模型规划失败：${errorMessage(error)}`, 'error');
           note =
-            '模型规划未完成，旧视觉任务已保留，本次仅使用新发现的 DOM 任务。请查看日志后重新规划。';
+            '模型规划未完成，旧模型任务已保留，本次仅使用新发现的 DOM 任务。请查看日志后重新规划。';
           this.updateJob(job.id, { warning: note });
         }
       }

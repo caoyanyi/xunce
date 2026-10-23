@@ -92,6 +92,86 @@ test('workspace supports saved settings, task editing, selected runs, revisions 
   await expect(page.locator('.task-row')).toHaveCount(1);
 });
 
+test('assertion options survive saving and reload, and optional link text can be cleared', async ({
+  page,
+}) => {
+  const config = await (await page.request.get('/api/config')).json();
+  const session = await (
+    await page.request.post('/api/sessions', {
+      data: { targetUrl: config.demoUrl, options: { engine: 'playwright' } },
+    })
+  ).json();
+  const expectedUrl = new URL('/catalog/?view=all#products', config.demoUrl).href;
+  await page.goto('/');
+  await page.evaluate((id) => localStorage.setItem('explorer-session', id), session.id);
+  await page.reload();
+  await page.getByRole('button', { name: '新建任务', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '新建测试任务' });
+  await editor.getByLabel('任务名称', { exact: true }).fill('断言参数持久化');
+  await editor.getByLabel('步骤 2 操作', { exact: true }).selectOption('assertUrl');
+  const urlStep = editor.locator('.editor-steps > li').nth(1);
+  await urlStep.getByLabel('页面地址', { exact: true }).fill(expectedUrl);
+  await editor.getByLabel('步骤 2 URL 匹配模式', { exact: true }).selectOption('path');
+  await expect(urlStep).toContainText('忽略 query/hash，但区分路径末尾斜线');
+  const urlTimeout = editor.getByLabel('步骤 2 等待时间（毫秒）', { exact: true });
+  await expect(urlTimeout).toHaveAttribute('min', '100');
+  await expect(urlTimeout).toHaveAttribute('max', '30000');
+  await expect(urlTimeout).toHaveAttribute('step', '1');
+  await urlTimeout.fill('2400');
+  await editor.getByRole('button', { name: '添加步骤', exact: true }).click();
+  await editor.getByLabel('步骤 3 操作', { exact: true }).selectOption('assertLink');
+  const linkStep = editor.locator('.editor-steps > li').nth(2);
+  await linkStep.getByLabel('页面地址', { exact: true }).fill(expectedUrl);
+  const linkText = editor.getByLabel('步骤 3 链接文本（可选）', { exact: true });
+  await expect(linkText).not.toHaveAttribute('required');
+  await expect(editor.getByLabel('预期可见文本', { exact: true })).toHaveCount(0);
+  await linkText.fill('查看 商品');
+  await editor.getByLabel('步骤 3 等待时间（毫秒）', { exact: true }).fill('3600');
+  await editor.getByRole('button', { name: '保存任务', exact: true }).click();
+  const details = page.getByRole('dialog', { name: '断言参数持久化', exact: true });
+  await expect(details.locator('.step-list')).toContainText('同源 + 路径');
+  await expect(details.locator('.step-list')).toContainText('等待 2400 毫秒');
+  await expect(details.locator('.step-list')).toContainText('文本包含“查看 商品”');
+  await expect(details.locator('.step-list')).toContainText('等待 3600 毫秒');
+  const saved = await (await page.request.get(`/api/sessions/${session.id}`)).json();
+  expect(saved.tasks[0].steps).toMatchObject([
+    { action: 'goto', url: config.demoUrl },
+    { action: 'assertUrl', url: expectedUrl, match: 'path', timeoutMs: 2400 },
+    { action: 'assertLink', url: expectedUrl, text: '查看 商品', timeoutMs: 3600 },
+  ]);
+  await page.reload();
+  await page.getByRole('button', { name: /断言参数持久化 页面可用性/ }).click();
+  await details.getByRole('button', { name: '编辑任务', exact: true }).click();
+  const editing = page.getByRole('dialog', { name: '编辑测试任务' });
+  await expect(editing.getByLabel('步骤 2 URL 匹配模式', { exact: true })).toHaveValue('path');
+  await expect(editing.getByLabel('步骤 2 等待时间（毫秒）', { exact: true })).toHaveValue('2400');
+  await expect(editing.getByLabel('步骤 3 链接文本（可选）', { exact: true })).toHaveValue(
+    '查看 商品',
+  );
+  await expect(editing.getByLabel('步骤 3 等待时间（毫秒）', { exact: true })).toHaveValue('3600');
+  await expect(editing.locator('.editor-steps > li').nth(1).getByLabel('页面地址')).toHaveValue(
+    expectedUrl,
+  );
+  await expect(editing.locator('.editor-steps > li').nth(2).getByLabel('页面地址')).toHaveValue(
+    expectedUrl,
+  );
+  await expect(editing.getByLabel('预期可见文本', { exact: true })).toHaveCount(0);
+  await editing.getByLabel('步骤 3 链接文本（可选）', { exact: true }).fill('');
+  await editing.getByRole('button', { name: '保存任务', exact: true }).click();
+  await expect(details).toContainText('任务版本 v2');
+  await page.reload();
+  await page.getByRole('button', { name: /断言参数持久化 页面可用性/ }).click();
+  await expect(details.locator('.step-list')).not.toContainText('文本包含');
+  const cleared = await (await page.request.get(`/api/sessions/${session.id}`)).json();
+  expect(cleared.tasks[0].steps[2]).not.toHaveProperty('text');
+  await details.getByRole('button', { name: '编辑任务', exact: true }).click();
+  await expect(editing.getByLabel('步骤 3 链接文本（可选）', { exact: true })).toHaveValue('');
+  await expect(editing.getByLabel('步骤 3 链接文本（可选）', { exact: true })).not.toHaveAttribute(
+    'required',
+  );
+  await editing.getByRole('button', { name: '取消', exact: true }).click();
+});
+
 test('questions do not start work, and a queued session can be cancelled and rerun', async ({
   page,
 }) => {
@@ -216,3 +296,106 @@ test('a run rejected by preflight displays its reason inside task details', asyn
   await expect(details.getByRole('alert')).toContainText('交互');
   expect((await (await page.request.get(`/api/sessions/${s.id}`)).json()).jobs).toHaveLength(0);
 });
+
+for (const kind of ['url', 'links', 'empty'] as const) {
+  test(`failed ${kind} assertions show strict browser evidence in task details`, async ({
+    page,
+  }) => {
+    const server = createServer((_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end(
+        `<title>Evidence fixture</title><h1>Assertion evidence</h1>${
+          kind === 'links'
+            ? Array.from(
+                { length: 45 },
+                (_, i) => `<a href="/other?item=${i}#details">候选 ${i}</a>`,
+              ).join('')
+            : '<p>没有可见链接的固定页面</p>'
+        }`,
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const target = `http://127.0.0.1:${(server.address() as { port: number }).port}/source?actual=1#form`;
+    let sessionId: string | undefined;
+    try {
+      const session = await (
+        await page.request.post('/api/sessions', {
+          data: { targetUrl: target, options: { engine: 'playwright' } },
+        })
+      ).json();
+      sessionId = session.id;
+      const expectedUrl = new URL('/expected?version=2#legal', target).href;
+      const title = `失败证据 ${kind}`;
+      await page.request.post(`/api/sessions/${session.id}/tasks`, {
+        data: {
+          title,
+          url: target,
+          engine: 'playwright',
+          kind: 'smoke',
+          steps: [
+            { action: 'goto', url: target },
+            kind === 'url'
+              ? { action: 'assertUrl', url: expectedUrl, timeoutMs: 100 }
+              : { action: 'assertLink', url: expectedUrl, text: '预期条款', timeoutMs: 100 },
+          ],
+        },
+      });
+      await page.goto('/');
+      await page.evaluate((id) => localStorage.setItem('explorer-session', id), session.id);
+      await page.reload();
+      await page.getByRole('button', { name: new RegExp(`${title} 页面可用性`) }).click();
+      let details = page.getByRole('dialog', { name: title, exact: true });
+      await details.getByRole('button', { name: '运行此任务', exact: true }).click();
+      const assertion = details.getByRole('region', { name: '断言失败详情' });
+      await expect(assertion).toBeVisible({ timeout: 30000 });
+      await expect(assertion).toContainText(`预期 URL：${expectedUrl}`);
+      await expect(assertion).toContainText(`当前 URL：${target}`);
+      await expect(assertion).toContainText('等待时间：100 毫秒');
+      await expect(details.locator('.diagnosis-panel')).toContainText('步骤 2');
+      if (kind === 'url') {
+        await expect(assertion).toContainText('规范化 URL 完整匹配（含 query/hash）');
+        await expect(assertion.getByLabel('可见链接证据')).toHaveCount(0);
+      } else {
+        await expect(assertion).toContainText('规范化 href 完整匹配（不点击）');
+        await expect(assertion).toContainText('链接文本包含：预期条款');
+        const links = assertion.getByLabel('可见链接证据');
+        if (kind === 'links') {
+          await expect(links.locator('li')).toHaveCount(40);
+          await expect(links.locator('li').first()).toHaveText(
+            `文本：候选 0\nhref：${new URL('/other?item=0#details', target).href}`,
+          );
+          await expect(links).toContainText('链接证据已截断');
+          await expect(links).toContainText('实际断言扫描全部可见链接');
+        } else {
+          await expect(links).toContainText('采集时未发现可见链接。');
+          await expect(links.locator('li')).toHaveCount(0);
+          await expect(links).not.toContainText('截断');
+          // Old or interrupted runs may have no link observation: do not present
+          // an unavailable observation as a proven empty list.
+          await page.route(`**/api/sessions/${session.id}`, async (route) => {
+            const response = await route.fetch();
+            const snapshot = await response.json();
+            for (const run of snapshot.runs) {
+              if (run.assertion) {
+                delete run.assertion.links;
+                delete run.assertion.linksTruncated;
+              }
+            }
+            await route.fulfill({ response, json: snapshot });
+          });
+          await page.reload();
+          await page.getByRole('button', { name: new RegExp(`${title} 页面可用性`) }).click();
+          details = page.getByRole('dialog', { name: title, exact: true });
+          await expect(details.getByLabel('可见链接证据')).toContainText('未采集到链接证据');
+          await expect(details.getByLabel('可见链接证据')).not.toContainText('采集时未发现');
+        }
+      }
+    } finally {
+      if (sessionId) await page.request.post(`/api/sessions/${sessionId}/cancel`, { data: {} });
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+}

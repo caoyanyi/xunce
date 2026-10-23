@@ -2,20 +2,72 @@ import { spawn } from 'node:child_process';
 import { writeFile, readdir, readFile } from 'node:fs/promises';
 import { join, relative, resolve, basename } from 'node:path';
 import type { RunResult } from 'e2e/runner';
-import type { Session, Task } from '../shared/types.ts';
+import type { Run, Session, Task } from '../shared/types.ts';
 import { resolveChromiumPath } from './browser.ts';
 import { throwIfAborted } from './policy.ts';
 import { renderingFingerprint } from './page-readiness.ts';
+import { inspectLinks, matchesUrl } from './assertions.ts';
+
+// Include each configured assertion's entire wait as well as navigation, startup
+// and cleanup. A 30s assertion must not collide with the runner's former 30s total.
+export function testerArmyTimeout(task: Task) {
+  return (
+    30000 +
+    task.steps.reduce(
+      (total, step) =>
+        total +
+        (step.action === 'assertUrl' || step.action === 'assertLink'
+          ? (step.timeoutMs ?? 10000)
+          : 20000),
+      0,
+    )
+  );
+}
 
 export function generateTest(task: Task, session: Session): string {
   // Only validated JSON values are interpolated. All executable code is this fixed template.
   return `import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
+import { writeFile } from 'node:fs/promises';
 const steps = ${JSON.stringify(task.steps, null, 2)};
 const origin = ${JSON.stringify(new URL(session.targetUrl).origin)};
 const allowWrites = ${JSON.stringify(session.options.allowWrites)};
 const renderingProbe = ${JSON.stringify(renderingFingerprint.toString())};
+const urlMatches = ${matchesUrl.toString()};
+const linkProbe = ${JSON.stringify(inspectLinks.toString())};
 test(${JSON.stringify(task.title)}, async ({ app, browser, screen }) => {
+  let failedStep, assertion;
+  const assertState = async step => {
+    const timeoutMs = step.timeoutMs ?? 10000;
+    const deadline = Date.now() + timeoutMs;
+    let links, actualUrl;
+    while (true) {
+      try {
+        // Renderer reads also expose closed/crashed pages; do not hide those errors.
+        actualUrl = await browser.evaluate(() => location.href);
+        if (step.action === 'assertUrl') {
+          if (urlMatches(actualUrl, step.url, step.match)) return;
+        } else {
+          links = await browser.evaluate('(' + linkProbe + ')(' + JSON.stringify({ url: step.url, text: step.text }) + ')');
+          if (links.matched) return;
+        }
+      } catch (error) {
+        if (!/Execution context was destroyed/i.test(String(error?.message))) throw error;
+        links = undefined;
+      }
+      if (Date.now() >= deadline) {
+        assertion = {
+          action: step.action, expectedUrl: new URL(step.url).href, actualUrl, timeoutMs,
+          ...(step.action === 'assertUrl' ? { match: step.match ?? 'exact' } : {
+            text: step.text, links: links?.links, linksTruncated: links?.truncated,
+          }),
+        };
+        throw new Error((step.action === 'assertUrl' ? '页面 URL 不匹配' : '可见链接未满足断言') +
+          '（等待 ' + timeoutMs + 'ms）。预期：' + assertion.expectedUrl + '；实际页面：' + actualUrl);
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(100, deadline - Date.now()))));
+    }
+  };
   await browser.goto('about:blank');
   await browser.route('**/*', async route => {
     const request = route.request;
@@ -23,7 +75,8 @@ test(${JSON.stringify(task.title)}, async ({ app, browser, screen }) => {
     return route.continue();
   });
   try {
-    for (const step of steps) {
+    for (const [index, step] of steps.entries()) {
+      failedStep = { index, action: step.action };
       switch (step.action) {
         case 'goto': {
           const [response] = await Promise.all([browser.waitForResponse(step.url), browser.goto(step.url, { waitUntil: 'domcontentloaded' })]);
@@ -50,12 +103,22 @@ test(${JSON.stringify(task.title)}, async ({ app, browser, screen }) => {
           break;
         }
         case 'assertText': await expect(screen.getByText(step.text)).toBeVisible(); break;
-        case 'assertUrl': if (await browser.url() !== step.url) throw new Error('页面 URL 不匹配'); break;
-        case 'assertLink': await expect(browser.locator('a[href=' + JSON.stringify(step.url) + ']')).toBeVisible(); break;
+        case 'assertUrl':
+        case 'assertLink': await assertState(step); break;
         default: throw new Error('TesterArmy 适配器不支持此步骤：' + step.action);
       }
     }
-  } finally { await app.screenshot('result'); }
+  } catch (error) {
+    const actualUrl = await browser.url().catch(() => undefined);
+    await writeFile(new URL('./assertion-evidence.json', import.meta.url), JSON.stringify({
+      failedStep, actualUrl,
+      ...(assertion ? { assertion, failureCode: assertion.action === 'assertUrl' ? 'url_mismatch' : 'link_mismatch' } : {}),
+    })).catch(() => {});
+    throw error;
+  } finally {
+    // Screenshot collection must not replace the original browser/assertion error.
+    await app.screenshot('result').catch(() => {});
+  }
 });
 `;
 }
@@ -103,7 +166,7 @@ process.on('SIGTERM', () => controller.abort());
 try {
 const result = await run({ cwd: ${JSON.stringify(folder)}, config: {
   targets: [{ name: 'chromium', engine: web(webOptions), app: { url: ${JSON.stringify(new URL(session.targetUrl).origin)} } }],
-  tests: ['runtime.e2e.ts'], output: 'output', timeout: 30000, launchTimeout: 25000, cleanupTimeout: 5000,
+  tests: ['runtime.e2e.ts'], output: 'output', timeout: ${testerArmyTimeout(task)}, launchTimeout: 25000, cleanupTimeout: 5000,
   workers: 1, retries: 0, trace: 'on', cache: 'off', reporters: []
 }, interruptSignal: controller.signal });
 await writeFile(${JSON.stringify(join(folder, 'runner-result.json'))}, JSON.stringify(result));
@@ -144,7 +207,7 @@ process.exitCode = result.exitCode;
       stop();
       killTimer = setTimeout(() => stop(true), 2000);
     };
-    const timeout = setTimeout(cancel, 60000);
+    const timeout = setTimeout(cancel, testerArmyTimeout(task) + 30000);
     signal.addEventListener('abort', cancel, { once: true });
     if (signal.aborted) cancel();
     const capture = (chunk: Buffer) => {
@@ -172,7 +235,17 @@ process.exitCode = result.exitCode;
     `/artifacts/${session.id}/${basename(folder)}/${relative(folder, path).split('\\').join('/')}`;
   const screenshot = files.find((f) => f.endsWith('.png'));
   const trace = files.find((f) => f.endsWith('.zip')) || files.find((f) => f.endsWith('trace.md'));
-  const evidence = {
+  const evidence: Pick<
+    Run,
+    | 'script'
+    | 'report'
+    | 'screenshot'
+    | 'trace'
+    | 'actualUrl'
+    | 'failedStep'
+    | 'failureCode'
+    | 'assertion'
+  > = {
     script: url(join(folder, 'task.e2e.ts')),
     report: url(
       join(
@@ -190,6 +263,18 @@ process.exitCode = result.exitCode;
     /* child may have been interrupted */
   }
   if (exitCode !== 0 || result.status !== 'passed') {
+    try {
+      // Written only by the fixed template, never supplied by the model or page.
+      const detail = JSON.parse(await readFile(join(folder, 'assertion-evidence.json'), 'utf8'));
+      evidence.actualUrl = detail.actualUrl;
+      evidence.failedStep = detail.failedStep;
+      if (!signal.aborted) {
+        evidence.assertion = detail.assertion;
+        evidence.failureCode = detail.failureCode;
+      }
+    } catch {
+      /* interruption or browser startup failure may leave no sidecar */
+    }
     const errors = result.report?.run;
     const detail =
       errors?.errors?.map((e) => e.message).join('\n') ||

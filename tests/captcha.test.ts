@@ -116,8 +116,19 @@ describe('live CAPTCHA handoff', () => {
     const result = env.store.snapshot(id)!.runs[0];
     expect(result.status).toBe('failed');
     expect(result.actualUrl).toBe(`${fixture.base}/home`);
-    expect(result.failureCode).toBeUndefined();
+    expect(result.failureCode).toBe('url_mismatch');
+    expect(result.failedStep).toEqual({ index: 6, action: 'assertUrl' });
+    expect(result.assertion).toMatchObject({
+      action: 'assertUrl',
+      expectedUrl: `${fixture.base}/missing`,
+      actualUrl: `${fixture.base}/home`,
+      match: 'exact',
+    });
     expect(result.error).not.toContain('Q7K9');
+    expect(JSON.stringify(env.store.snapshot(id))).not.toContain('Q7K9');
+    expect(
+      await readFile(`${env.dir}/artifacts/${id}/${run.id}/result.json`, 'utf8'),
+    ).not.toContain('Q7K9');
   });
   it('ends after three unsuccessful human submissions without claiming login passed', async () => {
     const id = start();

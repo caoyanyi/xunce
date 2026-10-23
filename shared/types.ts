@@ -6,8 +6,18 @@ export const stepSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('goto'), url: z.string().url() }),
   z.object({ action: z.literal('assertPage') }),
   z.object({ action: z.literal('assertText'), text: z.string().min(1).max(500) }),
-  z.object({ action: z.literal('assertUrl'), url: z.string().url() }),
-  z.object({ action: z.literal('assertLink'), url: z.string().url() }),
+  z.object({
+    action: z.literal('assertUrl'),
+    url: z.string().url(),
+    match: z.enum(['exact', 'path']).optional(),
+    timeoutMs: z.number().int().min(100).max(30000).optional(),
+  }),
+  z.object({
+    action: z.literal('assertLink'),
+    url: z.string().url(),
+    text: z.string().trim().min(1).max(500).optional(),
+    timeoutMs: z.number().int().min(100).max(30000).optional(),
+  }),
   z.object({ action: z.literal('navigateLink'), url: z.string().url() }),
   z.object({ action: z.literal('validateForm'), index: z.number().int().min(0).max(100) }),
   z.object({ action: z.literal('click'), selector: z.string().min(1).max(300) }),
@@ -149,7 +159,17 @@ export interface Run {
   durationMs?: number;
   error?: string;
   actualUrl?: string;
-  failureCode?: 'captcha_required' | 'page_not_ready';
+  failureCode?: 'captcha_required' | 'page_not_ready' | 'url_mismatch' | 'link_mismatch';
+  assertion?: {
+    action: 'assertUrl' | 'assertLink';
+    expectedUrl: string;
+    actualUrl: string;
+    timeoutMs: number;
+    match?: 'exact' | 'path';
+    text?: string;
+    links?: { text: string; url: string }[];
+    linksTruncated?: boolean;
+  };
   screenshot?: string;
   trace?: string;
   report?: string;

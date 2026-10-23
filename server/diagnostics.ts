@@ -12,6 +12,18 @@ export function diagnose(message: string, code?: Run['failureCode']): Diagnosis 
       title: '页面尚未加载就绪',
       advice: '检查目标地址和资源请求是否正常，查看截图及实际 URL；页面稳定后只复跑当前任务。',
     };
+  if (code === 'url_mismatch')
+    return {
+      title: '页面地址未达到预期',
+      advice:
+        '查看断言证据中的实际 URL 与预期 URL，确认自动跳转和登录是否完成。默认 exact 模式比较完整地址，包括 query 和 hash；只有明确只需比较 origin 与 pathname 时，才显式设置 match: "path" 忽略 query/hash，不要为通过测试而放宽预期。',
+    };
+  if (code === 'link_mismatch')
+    return {
+      title: '可见链接未达到预期',
+      advice:
+        '查看断言证据，对比同一个可见链接的实际文本、href 与预期文本、URL（包括 query/hash），不要拼接不同链接的文本与地址。assertLink 只检查解析后的 href，不点击链接，也不要求当前页面跳转；若 linksTruncated 为 true，列表不完整，未列出不代表链接不存在。',
+    };
   if (/HTTP\s+[45]\d\d/.test(message))
     return {
       title: '目标服务返回错误',

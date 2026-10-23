@@ -55,11 +55,11 @@ function stepLabel(step: Step) {
     case 'assertText':
       return `断言可见文本：${step.text}`;
     case 'assertUrl':
-      return `验证当前 URL：${step.url}`;
+      return `验证当前 URL：${step.url}${step.match === 'path' ? ' · 同源 + 路径（忽略 query/hash，区分尾斜线）' : ''} · 等待 ${step.timeoutMs ?? 10000} 毫秒`;
     case 'navigateLink':
       return `点击同源导航链接：${step.url}`;
     case 'assertLink':
-      return `验证入口链接可见：${step.url}`;
+      return `验证入口链接可见：${step.url}${step.text ? ` · 文本包含“${step.text}”` : ''} · 等待 ${step.timeoutMs ?? 10000} 毫秒`;
     case 'validateForm':
       return `验证第 ${step.index + 1} 个表单的必填字段约束`;
     case 'click':
@@ -1402,6 +1402,55 @@ function TaskDetail({
                     编辑此任务
                   </button>
                 </div>
+              )}
+              {latest.assertion && latest.status === 'failed' && (
+                <section className="run-definition" aria-label="断言失败详情">
+                  <strong>
+                    {latest.assertion.action === 'assertUrl' ? 'URL 断言' : '链接断言'}
+                  </strong>
+                  <pre className="error-detail">
+                    {[
+                      `预期 URL：${latest.assertion.expectedUrl}`,
+                      `匹配模式：${
+                        latest.assertion.action === 'assertLink'
+                          ? '规范化 href 完整匹配（不点击）'
+                          : latest.assertion.match === 'path'
+                            ? '同源 + 路径（忽略 query/hash，区分尾斜线）'
+                            : '规范化 URL 完整匹配（含 query/hash）'
+                      }`,
+                      latest.assertion.text ? `链接文本包含：${latest.assertion.text}` : '',
+                      `当前 URL：${latest.assertion.actualUrl}`,
+                      `等待时间：${latest.assertion.timeoutMs} 毫秒`,
+                    ]
+                      .filter(Boolean)
+                      .join('\n')}
+                  </pre>
+                  {latest.assertion.action === 'assertLink' && (
+                    <div aria-label="可见链接证据">
+                      <p>
+                        {latest.assertion.links === undefined
+                          ? '未采集到链接证据，不能据此判断页面没有链接。'
+                          : latest.assertion.links.length === 0
+                            ? '采集时未发现可见链接。'
+                            : `采集到的可见链接（${latest.assertion.links.length} 条，文本与 href 配对）：`}
+                      </p>
+                      {latest.assertion.links && latest.assertion.links.length > 0 && (
+                        <ul>
+                          {latest.assertion.links.map((link, index) => (
+                            <li key={index}>
+                              <pre className="error-detail">
+                                {`文本：${link.text || '（无文本）'}\nhref：${link.url}`}
+                              </pre>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {latest.assertion.linksTruncated && (
+                        <p>链接证据已截断，最多展示 40 条；实际断言扫描全部可见链接。</p>
+                      )}
+                    </div>
+                  )}
+                </section>
               )}
               {latest.error && <pre className="error-detail">{latest.error}</pre>}
               {latest.taskSnapshot && (

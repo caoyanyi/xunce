@@ -9,10 +9,18 @@ import { assertionContext, captchaControls, readPageState } from './page-state.t
 import { ExecutionBudget } from './manual-input.ts';
 import { PageReadiness } from './page-readiness.ts';
 import { followLink } from './navigation.ts';
+import { assertBrowserState, BrowserAssertionError } from './assertions.ts';
 
 type Evidence = Pick<
   Run,
-  'screenshot' | 'trace' | 'report' | 'script' | 'actualUrl' | 'failureCode' | 'failedStep'
+  | 'screenshot'
+  | 'trace'
+  | 'report'
+  | 'script'
+  | 'actualUrl'
+  | 'failureCode'
+  | 'failedStep'
+  | 'assertion'
 >;
 
 export async function executeTask(
@@ -113,21 +121,9 @@ export async function executeTask(
                   .waitFor({ state: 'visible' });
                 break;
               case 'assertUrl':
-                await page.waitForURL((url) => url.href === step.url, {
-                  timeout: 5000,
-                  waitUntil: 'domcontentloaded',
-                });
+              case 'assertLink':
+                await assertBrowserState(page, step, executionSignal);
                 break;
-              case 'assertLink': {
-                const link = page.locator('a[href]').filter({ visible: true });
-                const found = await link.evaluateAll(
-                  (anchors, url) =>
-                    anchors.some((a) => (a as HTMLAnchorElement).href.split('#')[0] === url),
-                  step.url,
-                );
-                if (!found) throw new Error('入口链接不存在或不可见');
-                break;
-              }
               case 'navigateLink': {
                 const next = await followLink(page, step.url);
                 if (next.page !== page) {
@@ -193,7 +189,11 @@ export async function executeTask(
             while (true) {
               try {
                 await runStep(step);
-                if (['assertUrl', 'assertText', 'assertPage', 'aiAssert'].includes(step.action))
+                if (
+                  ['assertUrl', 'assertLink', 'assertText', 'assertPage', 'aiAssert'].includes(
+                    step.action,
+                  )
+                )
                   delete evidence.failureCode;
                 break;
               } catch (error) {
@@ -211,7 +211,9 @@ export async function executeTask(
                   !task.steps
                     .slice(index + 1)
                     .some((next) =>
-                      ['assertUrl', 'assertText', 'assertPage', 'aiAssert'].includes(next.action),
+                      ['assertUrl', 'assertLink', 'assertText', 'assertPage', 'aiAssert'].includes(
+                        next.action,
+                      ),
                     )
                 )
                   throw error;
@@ -271,6 +273,10 @@ export async function executeTask(
           delete evidence.failureCode;
           delete evidence.failedStep;
         } catch (error) {
+          if (error instanceof BrowserAssertionError) {
+            evidence.assertion = error.assertion;
+            evidence.failureCode = error.failureCode;
+          }
           if (
             error &&
             typeof error === 'object' &&

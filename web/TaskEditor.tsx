@@ -283,7 +283,68 @@ export function TaskEditor({
                         />
                       </label>
                     )}
-                    {'text' in step && (
+                    {step.action === 'assertUrl' && (
+                      <label className="wide">
+                        URL 匹配模式
+                        <select
+                          aria-label={`步骤 ${index + 1} URL 匹配模式`}
+                          value={step.match ?? 'exact'}
+                          onChange={(event) =>
+                            update(index, {
+                              match: event.target.value === 'path' ? 'path' : undefined,
+                            })
+                          }
+                        >
+                          <option value="exact">完整 URL（默认）</option>
+                          <option value="path">同源 + 路径</option>
+                        </select>
+                        <small>
+                          完整匹配：规范化 URL 必须完全一致，包括 query/hash（查询参数和片段）。
+                          路径匹配：仅比较同源和 pathname，忽略 query/hash，但区分路径末尾斜线。
+                        </small>
+                      </label>
+                    )}
+                    {step.action === 'assertLink' && (
+                      <label className="wide">
+                        链接文本（可选）
+                        <input
+                          aria-label={`步骤 ${index + 1} 链接文本（可选）`}
+                          maxLength={500}
+                          value={step.text ?? ''}
+                          onChange={(event) =>
+                            update(index, {
+                              text: event.target.value.trim() ? event.target.value : undefined,
+                            })
+                          }
+                        />
+                        <small>
+                          规范化 href 完整匹配（含 query/hash）；文本按空白归一后的子串匹配。
+                          地址和文本须属于同一个可见 a 元素，只检查、不点击；留空不限制文本。
+                        </small>
+                      </label>
+                    )}
+                    {(step.action === 'assertUrl' || step.action === 'assertLink') && (
+                      <label>
+                        等待时间（毫秒）
+                        <input
+                          aria-label={`步骤 ${index + 1} 等待时间（毫秒）`}
+                          type="number"
+                          min={100}
+                          max={30000}
+                          step={1}
+                          placeholder="10000"
+                          value={step.timeoutMs ?? ''}
+                          onChange={(event) =>
+                            update(index, {
+                              timeoutMs:
+                                event.target.value === '' ? undefined : Number(event.target.value),
+                            })
+                          }
+                        />
+                        <small>100–30000 的整数；留空默认 10000 毫秒。</small>
+                      </label>
+                    )}
+                    {step.action === 'assertText' && (
                       <label className="wide">
                         预期可见文本
                         <input

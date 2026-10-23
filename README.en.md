@@ -111,22 +111,22 @@ Open **http://127.0.0.1:4318**, or **`http://<server-ip>:4318`** from another de
 
 ## Features
 
-| Capability                 | Current behavior                                                                                                            |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Conversational entry point | Start exploration, discover tasks, run tests, check progress, stop work, and retry failures.                                |
-| Autonomous discovery       | Same-origin breadth-first exploration with Playwright, extracting actual pages, links, and forms within page/depth budgets. |
-| Deterministic checks       | HTTP status, page title and body content, actual same-origin link navigation, and native required-field constraints.        |
-| Business-flow planning     | An optional OpenAI-compatible model plans structured visual tasks from page observations and user goals.                    |
-| Structured execution       | TesterArmy's official `e2e/runner` executes TypeScript tests generated from a fixed template, without model calls.          |
-| Visual execution           | Midscene `PlaywrightAgent.aiAct` and `aiAssert`, enabled after configuring a vision model.                                  |
-| Playwright baseline        | Direct Playwright execution for navigation and form-constraint tasks.                                                       |
-| Task management            | Priority, source, engine, status, search, filters, and individual/all/failed-task execution.                                |
-| Evidence                   | Screenshots, step logs, traces, raw reports, and generated TesterArmy test files.                                           |
-| History and recovery       | SQLite persistence, separate records for reruns, and interrupted-run recovery after a restart.                              |
-| Web console                | Chinese-language UI with conversation, page lists, task details, run history, JSON export, and a mobile layout.             |
-| HTTP API                   | Core console operations are also available through the API for CLI, CI, or agent integrations.                              |
+| Capability                 | Current behavior                                                                                                                 |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Conversational entry point | Start exploration, discover tasks, run tests, check progress, stop work, and retry failures.                                     |
+| Autonomous discovery       | Same-origin breadth-first exploration with Playwright, extracting actual pages, links, and forms within page/depth budgets.      |
+| Deterministic checks       | HTTP status, page title and body content, actual same-origin link navigation, and native required-field constraints.             |
+| Business-flow planning     | An optional OpenAI-compatible model plans structured tasks from page observations and user goals, with visual steps when needed. |
+| Structured execution       | TesterArmy's official `e2e/runner` executes TypeScript tests generated from a fixed template, without model calls.               |
+| Visual execution           | Midscene `PlaywrightAgent.aiAct` and `aiAssert`, enabled after configuring a vision model.                                       |
+| Playwright baseline        | Direct Playwright execution for navigation and form-constraint tasks.                                                            |
+| Task management            | Priority, source, engine, status, search, filters, and individual/all/failed-task execution.                                     |
+| Evidence                   | Screenshots, step logs, traces, raw reports, and generated TesterArmy test files.                                                |
+| History and recovery       | SQLite persistence, separate records for reruns, and interrupted-run recovery after a restart.                                   |
+| Web console                | Chinese-language UI with conversation, page lists, task details, run history, JSON export, and a mobile layout.                  |
+| HTTP API                   | Core console operations are also available through the API for CLI, CI, or agent integrations.                                   |
 
-Without model configuration, Xunce explicitly uses **DOM-based rules** to discover basic tests. Complex business-flow planning requires both the planner and vision-model configurations.
+Without planner configuration, Xunce explicitly uses **DOM-based rules** to discover basic tests. Configuring the planner enables structured business tasks; only tasks containing `aiAct` / `aiAssert` require a Midscene vision model.
 
 ### Conversation and controls
 
@@ -210,7 +210,7 @@ MIDSCENE_MODEL_API_KEY=your-key
 
 See the [Midscene model configuration guide](https://midscenejs.com/model-common-config) for supported families and provider parameters. Restart the native service, or recreate the Compose service with `docker compose up -d`, after changing the configuration. Check its status under **Model and exploration settings** (`模型与探索设置`). API keys stay on the server and are not returned to the browser or stored in SQLite. `.env` and runtime data are gitignored.
 
-When both configurations are available, the planner can add up to **6 visual business tasks** alongside the DOM tasks. Its output must pass JSON schema validation, start on an observed page, stay on the target origin, and include an outcome assertion. Invalid planning output is logged and the DOM tasks remain available.
+With planner configuration, the planner can add up to **6 business tasks** alongside the DOM tasks. Plans containing only structured steps use Playwright and do not require Midscene. Plans with `aiAct` / `aiAssert` use Midscene and must pass the vision-configuration preflight before execution. Output must pass JSON schema validation, start on an observed page, stay on the target origin, and include an outcome assertion. Invalid planning output is logged and the DOM tasks remain available.
 
 By default, browser requests that modify state are blocked, as are arbitrary clicks, filling, and visual actions. To test interactive flows, enable **Allow interactions and writes** (`允许交互与写操作`) before starting exploration, and use disposable test data. These actions can change data in the target system. The generated same-origin navigation check can click its validated link without enabling arbitrary interactions.
 
@@ -224,7 +224,27 @@ After navigation, Xunce waits for visible application content to settle before t
 
 Navigation tasks click real links and follow either the current tab or a newly opened tab. Subsequent assertions, screenshots, and the recorded actual URL use the destination page. The target-origin boundary also applies to new tabs.
 
-Use `assertUrl` to check the browser address and a separate visual assertion for page content. Visual assertions also receive the actual browser URL as context. Playwright/Midscene runs save `actualUrl`, displayed as **Actual URL** (`实际 URL`) in task details.
+Use `assertUrl` to check the browser address and a separate visual assertion for page content. Visual assertions receive the actual browser URL and paired visible-link text/href observations as context; they must not infer addresses from pixels. Playwright/Midscene runs save `actualUrl`, displayed as **Actual URL** (`实际 URL`) in task details.
+
+#### Strict URL and link assertions
+
+- **`assertUrl`** defaults to `match: "exact"`: it compares full addresses after standard `URL` canonicalization, **including query and hash**. Select `match: "path"` only when the expected outcome explicitly allows ignoring both. Path mode still requires identical origin and pathname, including case, trailing slash, and path boundaries. Timeouts never relax the expectation.
+- **`assertLink`** checks the full canonical href of one visible `<a href>`. Optional `text` is a case-sensitive substring after whitespace normalization and must belong to that same anchor. Relative hrefs resolve against the page; query/hash remain significant. It **does not click** or require navigation, and never combines one anchor's text with another's destination.
+- **Bounded waiting:** both assertions poll for **10000 ms** by default without requiring another `DOMContentLoaded`. The task editor accepts an integer `timeoutMs` from **100 to 30000**. Cancellation, page closure, and renderer crashes are not mislabeled as expectation mismatches.
+- **Failure evidence:** task details show the expected URL, actual page URL, match mode, wait budget, and failed step. Link evidence retains up to 40 paired records, with text/URL limited to 500/4096 characters respectively; matching still scans all visible anchors using untruncated values. `linksTruncated: true` means an incomplete list, not proof that an unlisted link is absent. Unavailable evidence and an observed empty list are shown differently.
+
+For example, verify a login-page terms destination without clicking or using a vision model:
+
+```json
+{
+  "action": "assertLink",
+  "url": "https://app.example.com/terms",
+  "text": "Terms of Service",
+  "timeoutMs": 10000
+}
+```
+
+New plans prefer structured assertions. An explicit URL/href destination requirement inside `aiAssert` rejects that plan rather than guessing a destination or silently rewriting the expectation. **Existing tasks are not automatically migrated.** Use **Edit this task** (`编辑此任务`) to replace destination checks with `assertLink` and current-address checks with `assertUrl`; retain genuinely visual checks in a separate `aiAssert`, or replan the goal. Expected addresses must come from observed evidence or the user's explicit requirement. A post-login assertion still needs actual login actions earlier in the same task.
 
 Xunce supports **human CAPTCHA input followed by test continuation**. Enable writable interaction and use Playwright or Midscene. When an action or outcome assertion is blocked by an image CAPTCHA and Xunce can identify a unique CAPTCHA input and login button, the run enters `waiting_input`. The workspace and task details show a screenshot and input card. Enter the code and click **Submit and continue** (`提交并继续`); Xunce fills the live input, submits the current login form, and checks the original URL/page assertions.
 
@@ -247,7 +267,7 @@ data/
         └── <run-id>/     # Run screenshots, traces, reports, and test code.
 ```
 
-Use `DATA_DIR` to customize native storage. Docker uses `/app/data` in its persistent volume. Duplicate jobs within the same session are rejected; different sessions queue for the single worker. Cancellation and shutdown clean up browsers and child processes while retaining completed results. Direct Playwright/Midscene tasks have a **120-second** budget; TesterArmy subprocesses have a **60-second** budget.
+Use `DATA_DIR` to customize native storage. Docker uses `/app/data` in its persistent volume. Duplicate jobs within the same session are rejected; different sessions queue for the single worker. Cancellation and shutdown clean up browsers and child processes while retaining completed results. Direct Playwright/Midscene tasks have a **120-second** budget. The TesterArmy runner budget is 30 seconds plus all step budgets: configured/default 10-second waits for URL/link assertions and 20 seconds for each other step. The parent process allows another 30 seconds for startup and cleanup.
 
 | Method     | Endpoint                              | Purpose                                                                                  |
 | ---------- | ------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -293,9 +313,9 @@ PLANNER_API_KEY='' MIDSCENE_MODEL_API_KEY='' npm run test:e2e
 npm audit
 ```
 
-The test suite covers execution boundaries, planner-output validation, SQLite restart recovery, real browser discovery, form assertions, HTTP failures, the official TesterArmy runner, the full API workflow, concurrency, cancellation, and rerun history. Tests also cover human CAPTCHA continuation, wrong responses, cancellation, expiry, restart cleanup, and the paused execution budget. UI E2E tests exercise the conversation-to-results flow, CAPTCHA input across a console reload, failure evidence, reruns, persistence, and mobile layout, producing screenshots in `docs/screenshots/`.
+The suite covers execution boundaries, planner-output validation, SQLite restart recovery, real browser discovery, form assertions, HTTP failures, the official TesterArmy runner, the API workflow, concurrency, cancellation, and rerun history. Assertion regressions cover late SPA navigation, query/hash significance, strict same-origin path matching, relative links, same-anchor text/href pairing, truncated evidence, and cancellation/closure/crashes. CAPTCHA tests cover human continuation, wrong responses, expiry, restart cleanup, and paused execution budgets. UI E2E covers the conversation-to-results flow, saved assertion options across reload, URL/link failure evidence, CAPTCHA input, reruns, and mobile layouts, producing screenshots in `docs/screenshots/`.
 
-`npm run test:e2e` builds the app and starts an isolated test service. The commands above explicitly disable configured models so tests use the built-in store and local mock providers without calling your paid providers, even if `.env` contains model credentials. `npm run format` formats the source. The **2026-10-23** recheck passed **140 unit/integration tests across 15 files** and **9 UI E2E tests**, plus type checking, lint, frontend/backend production builds, and an npm audit with **0 known vulnerabilities**. Five new regression cases cover CAPTCHA wait ownership, submission after cancellation, concurrent waits, pre-aborted waits, and expiry boundaries. This Windows recheck used the installed Chrome via `CHROMIUM_PATH`; Docker was not rerun. See the [0.2 verification and current recheck record (Chinese)](docs/verification-v0.2.md#2026-10-23-验证码生命周期复验). The initial **89.74%** backend/shared-code line coverage is a [historical result](docs/verification.md), not a new measurement.
+`npm run test:e2e` builds the app and starts an isolated test service. The commands above explicitly disable configured models so tests use the built-in store and local mock providers without calling your paid providers, even if `.env` contains credentials. `npm run format` formats the source. The **2026-10-23 strict-assertion iteration** passed **228 unit/integration tests across 17 files**. After fixing browser-probe serialization, the **72 affected tests** and full **13 UI E2E tests** passed again. After correcting planner-capability messages, **59 targeted planner/usability tests** passed, including 2 new configuration-combination regressions. The current suite defines 230 tests; the full suite was not rerun. Final type checking, lint, changed-source formatting, and frontend/backend production builds passed. This Windows run used installed Chrome via `CHROMIUM_PATH`; Docker, dependency audit, coverage, and real paid-model behavior were not rechecked. See the [strict assertion verification record (Chinese)](docs/verification-v0.2.md#2026-10-23-严格-url-与链接断言验收). The earlier audit with 0 known vulnerabilities and initial 89.74% line coverage are historical results, not new measurements.
 
 ## Current scope and roadmap
 

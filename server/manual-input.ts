@@ -8,6 +8,8 @@ export class ManualInputs {
     sessionId: string;
     runId: string;
     request: InputRequest;
+    signal: AbortSignal;
+    consumed: boolean;
     resolve: (value: string) => void;
   };
   async wait(
@@ -36,7 +38,7 @@ export class ManualInputs {
           () => reject(new UserError('等待验证码超时，请重新运行任务')),
           timeoutMs,
         );
-        this.pending = { sessionId, runId, request, resolve };
+        this.pending = { sessionId, runId, request, signal, consumed: false, resolve };
         publish(request);
       });
     } finally {
@@ -50,14 +52,17 @@ export class ManualInputs {
     const pending = this.pending;
     if (
       !pending ||
+      pending.consumed ||
+      pending.signal.aborted ||
       pending.sessionId !== sessionId ||
       pending.runId !== runId ||
       pending.request.id !== requestId ||
       Date.now() >= Date.parse(pending.request.expiresAt)
     )
       throw new UserError('验证码请求已失效或不属于此任务，请刷新页面查看当前请求', 409);
-    // Consume synchronously: two HTTP submissions cannot resume the same wait twice.
-    this.pending = undefined;
+    // Consume synchronously, but retain ownership until wait's finally clears published metadata.
+    // Otherwise a new wait could be installed and then erased by the previous wait's cleanup.
+    pending.consumed = true;
     pending.resolve(value);
   }
 }
